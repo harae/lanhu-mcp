@@ -69,3 +69,6 @@ screenshots/
 test_output/
 test_results/
 
+users/
+
+account_cookies.json

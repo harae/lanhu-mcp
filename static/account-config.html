@@ -1,0 +1,1076 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>蓝湖 MCP 控制台</title>
+  <style>
+    :root {
+      --bg: #f3efe6;
+      --panel: rgba(255, 252, 245, 0.82);
+      --panel-strong: #fffdf8;
+      --line: rgba(117, 91, 53, 0.18);
+      --text: #1b1712;
+      --muted: #6d5b46;
+      --brand: #b45309;
+      --brand-deep: #8a3e06;
+      --accent: #0f766e;
+      --ok-bg: #ecfdf3;
+      --ok-line: #86efac;
+      --err-bg: #fff1f2;
+      --err-line: #fda4af;
+      --shadow: 0 24px 80px rgba(82, 54, 22, 0.12);
+      --radius-xl: 28px;
+      --radius-lg: 20px;
+      --radius-md: 14px;
+      --radius-sm: 10px;
+      --mono: "SFMono-Regular", "JetBrains Mono", Menlo, Consolas, monospace;
+      --sans: "PingFang SC", "Hiragino Sans GB", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: var(--sans);
+      color: var(--text);
+      background:
+        radial-gradient(circle at top left, rgba(240, 171, 41, 0.22), transparent 28%),
+        radial-gradient(circle at top right, rgba(15, 118, 110, 0.16), transparent 24%),
+        linear-gradient(180deg, #f8f2e8 0%, #f3efe6 42%, #efe8dc 100%);
+    }
+
+    .shell {
+      width: min(1400px, calc(100vw - 32px));
+      margin: 24px auto 48px;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 12px;
+      border-radius: 999px;
+      background: rgba(255, 244, 228, 0.9);
+      color: var(--brand-deep);
+      border: 1px solid rgba(180, 83, 9, 0.18);
+      font-size: 12px;
+      letter-spacing: 0.08em;
+    }
+
+    h1 {
+      margin: 16px 0 10px;
+      font-size: clamp(32px, 5vw, 54px);
+      line-height: 1.02;
+      letter-spacing: -0.04em;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 18px;
+      margin-top: 18px;
+      align-items: start;
+    }
+
+    .stack {
+      display: grid;
+      gap: 18px;
+    }
+
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: var(--radius-xl);
+      background: var(--panel);
+      backdrop-filter: blur(14px);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .panel-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+      padding: 22px 24px 0;
+    }
+
+    .panel-head h2 {
+      margin: 0;
+      font-size: 22px;
+      letter-spacing: -0.03em;
+    }
+
+    .panel-head p {
+      margin: 6px 0 0;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.65;
+    }
+
+    .panel-body {
+      padding: 22px 24px 24px;
+    }
+
+    .field-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+
+    .field-grid .full {
+      grid-column: 1 / -1;
+    }
+
+    label {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 13px;
+      font-weight: 700;
+      color: #3f3428;
+    }
+
+    input,
+    textarea,
+    select {
+      width: 100%;
+      border: 1px solid rgba(117, 91, 53, 0.22);
+      background: rgba(255, 255, 255, 0.84);
+      border-radius: var(--radius-md);
+      padding: 12px 14px;
+      color: var(--text);
+      font: inherit;
+      transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+    }
+
+    textarea {
+      min-height: 120px;
+      resize: vertical;
+      font-family: var(--mono);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    input:focus,
+    textarea:focus,
+    select:focus {
+      outline: none;
+      border-color: rgba(180, 83, 9, 0.48);
+      box-shadow: 0 0 0 4px rgba(180, 83, 9, 0.12);
+      transform: translateY(-1px);
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 18px;
+    }
+
+    button {
+      appearance: none;
+      border: 0;
+      border-radius: 999px;
+      padding: 12px 18px;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+      transition: transform 0.18s ease, opacity 0.18s ease, box-shadow 0.18s ease;
+    }
+
+    button:hover {
+      transform: translateY(-1px);
+    }
+
+    button:active {
+      transform: translateY(0);
+      opacity: 0.92;
+    }
+
+    .primary {
+      background: linear-gradient(135deg, var(--brand), #d97706);
+      color: #fffdf8;
+      box-shadow: 0 12px 24px rgba(180, 83, 9, 0.22);
+    }
+
+    .secondary {
+      background: rgba(255, 255, 255, 0.82);
+      color: var(--text);
+      border: 1px solid rgba(117, 91, 53, 0.2);
+    }
+
+    .ghost {
+      background: rgba(255, 248, 238, 0.9);
+      color: var(--brand-deep);
+      border: 1px solid rgba(180, 83, 9, 0.16);
+    }
+
+    .status {
+      padding: 14px 16px;
+      border-radius: 18px;
+      border: 1px solid transparent;
+      white-space: pre-wrap;
+      font-size: 13px;
+      line-height: 1.65;
+      min-height: 54px;
+    }
+
+    .status-inline {
+      min-height: 112px;
+    }
+
+    .global-status-wrap {
+      margin-bottom: 18px;
+    }
+
+    .global-status-label {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 13px;
+      font-weight: 700;
+      color: #3f3428;
+    }
+
+    .status.ok {
+      background: var(--ok-bg);
+      border-color: var(--ok-line);
+    }
+
+    .status.err {
+      background: var(--err-bg);
+      border-color: var(--err-line);
+    }
+
+    .tip {
+      margin-top: 14px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.7;
+    }
+
+    .tip code,
+    .config-box code,
+    .tool-meta code {
+      padding: 2px 6px;
+      border-radius: 8px;
+      background: rgba(180, 83, 9, 0.08);
+      border: 1px solid rgba(180, 83, 9, 0.14);
+      font-family: var(--mono);
+      font-size: 12px;
+    }
+
+    .config-box,
+    .output {
+      border-radius: var(--radius-lg);
+      background: #191611;
+      color: #f8f4ec;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      padding: 16px;
+      white-space: pre-wrap;
+      font-family: var(--mono);
+      font-size: 12px;
+      line-height: 1.7;
+      overflow: auto;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 5px 10px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--accent);
+      background: rgba(15, 118, 110, 0.08);
+      border: 1px solid rgba(15, 118, 110, 0.16);
+    }
+
+    .capability-list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .capability-item {
+      display: grid;
+      gap: 8px;
+      padding: 14px 16px;
+      border-radius: 18px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.76);
+    }
+
+    .capability-head {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+    }
+
+    .capability-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .capability-actions button {
+      border-radius: 12px;
+      padding: 8px 12px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .capability-item h3 {
+      margin: 0;
+      font-size: 15px;
+      letter-spacing: -0.02em;
+    }
+
+    .capability-item p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.65;
+    }
+
+    .tool-meta {
+      display: grid;
+      gap: 6px;
+      font-size: 12px;
+      color: #493d31;
+    }
+
+    .debug-head {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(220px, 1fr));
+      gap: 14px;
+      margin-bottom: 18px;
+    }
+
+    .debug-split {
+      display: grid;
+      grid-template-columns: minmax(420px, 1.1fr) minmax(320px, 0.9fr);
+      gap: 18px;
+      align-items: start;
+    }
+
+    .tester-panel .panel-body {
+      padding-top: 18px;
+    }
+
+    .editor-pane,
+    .info-pane {
+      min-width: 0;
+    }
+
+    .editor-pane {
+      display: grid;
+      gap: 14px;
+      min-width: 0;
+    }
+
+    .editor-card,
+    .info-card {
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      background: rgba(255, 255, 255, 0.72);
+      padding: 16px;
+    }
+
+    .editor-card textarea {
+      min-height: 360px;
+    }
+
+    .editor-actions {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    .editor-actions button {
+      width: 100%;
+      min-width: 0;
+      border-radius: 16px;
+      padding: 14px 12px;
+    }
+
+    .info-pane {
+      display: grid;
+      gap: 14px;
+    }
+
+    .output-block {
+      display: grid;
+      gap: 14px;
+      align-content: start;
+    }
+
+    .output-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: #3f3428;
+    }
+
+    .mini-note {
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+
+    .hidden {
+      display: none !important;
+    }
+
+    @media (max-width: 1180px) {
+      .layout,
+      .debug-split,
+      .field-grid,
+      .debug-head {
+        grid-template-columns: 1fr;
+      }
+
+      .editor-actions {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 760px) {
+      .shell {
+        width: min(100vw - 18px, 100%);
+        margin: 10px auto 24px;
+      }
+
+      .panel-body,
+      .panel-head {
+        padding-left: 18px;
+        padding-right: 18px;
+      }
+
+      .editor-card textarea {
+        min-height: 260px;
+      }
+
+      .config-box,
+      .output {
+        font-size: 11px;
+        padding: 14px;
+      }
+
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="global-status-wrap">
+      <label class="global-status-label" for="status">全局状态</label>
+      <div id="status" class="status status-inline">等待操作</div>
+    </div>
+
+    <div class="layout">
+      <div class="stack">
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>账号与 Cookie 配置</h2>
+              <p>账号名必须与 MCP URL 里的 <code>account=</code> 保持一致。保存后写入 <code>db/account_cookies.json</code>。</p>
+            </div>
+          </div>
+          <div class="panel-body">
+            <form id="cookieForm" onsubmit="return false;">
+              <div class="field-grid">
+                <div>
+                  <label for="username">账号 ID</label>
+                  <input id="username" name="username" autocomplete="off" placeholder="例如 dev01 / alice / product-a" />
+                </div>
+                <div>
+                  <label for="displayName">显示名称（仅用于测试面板）</label>
+                  <input id="displayName" name="displayName" autocomplete="off" placeholder="例如 张三" />
+                </div>
+              </div>
+
+              <div class="field-grid">
+                <div class="full">
+                  <label for="cookie">蓝湖 Cookie</label>
+                  <textarea id="cookie" name="cookie" placeholder="整段复制浏览器请求头里的 Cookie"></textarea>
+                </div>
+                <div class="full">
+                  <label for="dds_cookie">DDS Cookie（可选）</label>
+                  <textarea id="dds_cookie" name="dds_cookie" placeholder="不填时默认复用蓝湖 Cookie"></textarea>
+                </div>
+              </div>
+              <div class="actions">
+                <button type="button" class="primary" id="btnSave">保存账号</button>
+                <button type="button" class="secondary" id="btnTest">测试当前 Cookie</button>
+                <button type="button" class="ghost" id="btnLoad">加载已保存账号</button>
+              </div>
+            </form>
+            <div class="tip">
+              请通过 <code>/account-config</code> 页面访问，而不是 <code>file://</code> 打开本文件。
+              如果网络或反向代理层没有把请求转发回当前 MCP 服务，保存和测试都会失败。
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>MCP 连接配置</h2>
+              <p>下面的模板会根据当前账号自动生成，复制后放进你的 AI 客户端 MCP 配置即可。</p>
+            </div>
+          </div>
+          <div class="panel-body">
+            <div class="config-box" id="mcpConfig"></div>
+            <div class="actions">
+              <button type="button" class="secondary" id="btnCopyConfig">复制配置模板</button>
+            </div>
+            <div class="tip">
+              连接 URL 说明：
+              <code>account</code> 决定读取哪组 Cookie；
+              <code>name</code> 和 <code>role</code> 会用于留言板协作记录与角色推荐。
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>MCP 提供的功能列表</h2>
+              <p>这里只列出当前服务提供的 MCP 功能与用途说明，不再展示目录卡片交互。</p>
+            </div>
+          </div>
+          <div class="panel-body">
+            <div class="capability-list" id="capabilityList"></div>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <section class="panel tester-panel">
+      <div class="panel-head">
+        <div>
+          <h2>工具输入 / 输出测试</h2>
+        </div>
+      </div>
+      <div class="panel-body">
+        <div class="debug-head">
+          <div>
+            <label for="toolSelect">工具</label>
+            <select id="toolSelect"></select>
+          </div>
+          <div>
+            <label for="role">测试角色</label>
+            <select id="role">
+              <option value="开发">开发</option>
+              <option value="后端">后端</option>
+              <option value="前端">前端</option>
+              <option value="客户端">客户端</option>
+              <option value="产品">产品</option>
+              <option value="项目经理">项目经理</option>
+              <option value="运维">运维</option>
+            </select>
+          </div>
+          <div>
+            <label for="requestMode">调试方式</label>
+            <select id="requestMode">
+              <option value="debug">页面调试接口</option>
+              <option value="template">仅生成参数模板</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="debug-split">
+          <div class="editor-pane">
+            <div class="editor-card">
+              <label for="toolArgs">输入参数 JSON</label>
+              <textarea id="toolArgs" spellcheck="false"></textarea>
+              <div class="editor-actions">
+                <button type="button" class="primary" id="btnRunTool">运行测试</button>
+                <button type="button" class="secondary" id="btnResetArgs">恢复示例参数</button>
+                <button type="button" class="ghost" id="btnCopyArgs">复制参数</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="info-pane">
+            <div class="info-card">
+              <div class="output-title">工具说明</div>
+              <div class="mini-note" id="toolSummary">选择一个工具查看用途与输入输出说明。</div>
+            </div>
+            <div class="output-block">
+              <div>
+                <div class="output-title">调试请求</div>
+                <div class="output" id="requestPreview">等待选择工具…</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div>
+          <div class="output-title">调试响应</div>
+          <div class="output" id="toolOutput">尚未执行。</div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+
+    const state = {
+      tools: [],
+      activeTool: null,
+      toolReturnMap: {},
+    };
+
+    const fallbackTools = [
+      { name: "lanhu_resolve_invite_link", group: "文档入口", summary: "把蓝湖邀请链接解析为可直接使用的项目 URL。", input_hint: "输入 invite_url。", output_hint: "输出解析后的 resolved_url 与项目参数。", example_args: { invite_url: "https://lanhuapp.com/link/#/invite?sid=example" } },
+      { name: "lanhu_get_pages", group: "需求文档", summary: "读取 PRD / Axure 原型的页面列表。", input_hint: "输入带 docId 的原型 URL。", output_hint: "输出页面列表、文档信息、推荐分析模式。", example_args: { url: "https://lanhuapp.com/web/#/item/project/product?tid=team_id&pid=project_id&docId=document_id" } },
+      { name: "lanhu_get_ai_analyze_page_result", group: "需求文档", summary: "对指定原型页面做文本或全量分析。", input_hint: "输入 url、page_names；可选 mode 和 analysis_mode。", output_hint: "输出页面文本、截图路径、结构化分析内容。", example_args: { url: "https://lanhuapp.com/web/#/item/project/product?tid=team_id&pid=project_id&docId=document_id", page_names: "all", mode: "text_only", analysis_mode: "developer" } },
+      { name: "lanhu_get_designs", group: "设计稿", summary: "读取设计项目中的设计稿列表。", input_hint: "输入不带 docId 的设计项目 URL。", output_hint: "输出设计稿列表、画板尺寸、设计数量。", example_args: { url: "https://lanhuapp.com/web/#/item/project/stage?tid=team_id&pid=project_id" } },
+      { name: "lanhu_get_ai_analyze_design_result", group: "设计稿", summary: "分析设计稿并返回图片、HTML/CSS 参考。", input_hint: "输入设计项目 url 和 design_names。", output_hint: "输出截图、设计标注、HTML/CSS 结构参考。", example_args: { url: "https://lanhuapp.com/web/#/item/project/stage?tid=team_id&pid=project_id", design_names: "all" } },
+      { name: "lanhu_get_design_slices", group: "设计稿", summary: "提取设计稿里的切图与素材下载信息。", input_hint: "输入设计项目 url 和单个 design_name。", output_hint: "输出切图列表、下载地址、图层元数据。", example_args: { url: "https://lanhuapp.com/web/#/item/project/stage?tid=team_id&pid=project_id", design_name: "首页设计", include_metadata: true } },
+      { name: "lanhu_say", group: "协作留言", summary: "在项目下发布留言、问题或知识沉淀。", input_hint: "输入 url、summary、content；可选 mentions、message_type。", output_hint: "输出保存后的消息 ID 与文档元数据。", example_args: { url: "https://lanhuapp.com/web/#/item/project/product?tid=team_id&pid=project_id&docId=document_id", summary: "退款规则确认", content: "测试环境退款链路已跑通，待确认超时取消规则。", message_type: "knowledge" } },
+      { name: "lanhu_say_list", group: "协作留言", summary: "按项目或全局查看留言列表。", input_hint: "可输入 url 或 all；可选 filter_type、search_regex、limit。", output_hint: "输出消息分组、@我统计、筛选结果。", example_args: { url: "all", filter_type: "knowledge", limit: 10 } },
+      { name: "lanhu_say_detail", group: "协作留言", summary: "按消息 ID 查看完整内容。", input_hint: "输入 message_ids，以及 url 或 project_id。", output_hint: "输出消息详情正文。", example_args: { message_ids: [1], project_id: "project_id" } },
+      { name: "lanhu_say_edit", group: "协作留言", summary: "编辑已有留言。", input_hint: "输入 url、message_id 和要更新的字段。", output_hint: "输出更新后的消息内容。", example_args: { url: "https://lanhuapp.com/web/#/item/project/product?tid=team_id&pid=project_id&docId=document_id", message_id: 1, summary: "退款规则确认（已更新）" } },
+      { name: "lanhu_say_delete", group: "协作留言", summary: "删除指定留言。", input_hint: "输入 url 和 message_id。", output_hint: "输出删除结果。", example_args: { url: "https://lanhuapp.com/web/#/item/project/product?tid=team_id&pid=project_id&docId=document_id", message_id: 1 } },
+      { name: "lanhu_get_members", group: "协作留言", summary: "查看访问过该项目的协作者列表。", input_hint: "输入项目 URL。", output_hint: "输出成员名、角色、首次和最近访问时间。", example_args: { url: "https://lanhuapp.com/web/#/item/project/product?tid=team_id&pid=project_id&docId=document_id" } }
+    ];
+
+    const statusEl = $("status");
+    const capabilityListEl = $("capabilityList");
+    const toolSelectEl = $("toolSelect");
+    const toolArgsEl = $("toolArgs");
+    const toolOutputEl = $("toolOutput");
+    const requestPreviewEl = $("requestPreview");
+    const toolSummaryEl = $("toolSummary");
+
+    const api = (path) => path.startsWith("http") ? path : window.location.origin + path;
+
+    function show(msg, ok) {
+      statusEl.className = "status " + (ok ? "ok" : "err");
+      statusEl.textContent = msg;
+      statusEl.classList.add("status-inline");
+    }
+
+    function pretty(value) {
+      if (typeof value === "string") return value;
+      try {
+        return JSON.stringify(value, null, 2);
+      } catch (_) {
+        return String(value);
+      }
+    }
+
+    function readIdentity() {
+      const account = ($("username").value || "").trim() || "default";
+      const name = ($("displayName").value || "").trim() || account;
+      const role = ($("role").value || "").trim() || "开发";
+      return { account, name, role };
+    }
+
+    function buildMcpConfig(account) {
+      const base = window.location.origin;
+      return `{
+  "mcpServers": {
+    "lanhu": {
+      "url": "${base}/mcp?account=${account}&role=Developer&name=${account}"
+    }
+  }
+}`;
+    }
+
+    function renderMcpConfig() {
+      const { account } = readIdentity();
+      $("mcpConfig").textContent = buildMcpConfig(account);
+    }
+
+    function currentTool() {
+      return state.tools.find((tool) => tool.name === toolSelectEl.value) || null;
+    }
+
+    function renderToolSummary(tool) {
+      if (!tool) {
+        toolSummaryEl.textContent = "选择一个工具查看用途与输入输出说明。";
+        return;
+      }
+      toolSummaryEl.innerHTML = [
+        `<strong>${tool.name}</strong>`,
+        `分类：${tool.group}`,
+        `用途：${tool.summary}`,
+        `输入：${tool.input_hint}`,
+        `输出：${tool.output_hint}`
+      ].join("<br>");
+    }
+
+    function updateRequestPreview() {
+      const tool = currentTool();
+      const identity = readIdentity();
+      let args = {};
+      try {
+        args = JSON.parse(toolArgsEl.value || "{}");
+      } catch (_) {
+        requestPreviewEl.textContent = "参数 JSON 还未合法，无法生成请求预览。";
+        return;
+      }
+
+      if (!tool) {
+        requestPreviewEl.textContent = "等待选择工具…";
+        return;
+      }
+
+      const payload = {
+        tool_name: tool.name,
+        args,
+        query: identity,
+      };
+
+      requestPreviewEl.textContent = pretty({
+        method: "POST",
+        url: `${api("/api/tool-debug/call")}?account=${encodeURIComponent(identity.account)}&name=${encodeURIComponent(identity.name)}&role=${encodeURIComponent(identity.role)}`,
+        body: payload,
+      });
+    }
+
+    function setActiveTool(name, syncSelect = true) {
+      state.activeTool = name;
+      if (syncSelect) toolSelectEl.value = name;
+      const tool = currentTool();
+      if (!tool) return;
+
+      toolArgsEl.value = pretty(tool.example_args || {});
+      renderToolSummary(tool);
+      updateRequestPreview();
+    }
+
+    function renderCapabilities(list) {
+      capabilityListEl.innerHTML = "";
+      for (const tool of list) {
+        const templates = state.toolReturnMap[tool.name] || [];
+        const item = document.createElement("div");
+        item.className = "capability-item";
+        item.innerHTML = `
+          <div class="capability-head">
+            <div>
+              <div class="badge">${tool.group}</div>
+              <h3>${tool.name}</h3>
+            </div>
+            <div class="capability-actions">
+              ${templates.length ? '<button type="button" class="secondary js-edit-return">编辑 return markdown</button>' : ""}
+            </div>
+          </div>
+          <p>${tool.summary}</p>
+          <div class="tool-meta">
+            <div><strong>输入：</strong>${tool.input_hint}</div>
+            <div><strong>输出：</strong>${tool.output_hint}</div>
+          </div>
+        `;
+        const editBtn = item.querySelector(".js-edit-return");
+        if (editBtn) {
+          editBtn.onclick = async () => {
+            const identity = readIdentity();
+            const ok = await ensureAuthorizedAccount(identity.account);
+            if (!ok) return;
+            window.location.href =
+              `${api("/tool-return-editor")}?account=${encodeURIComponent(identity.account)}&tool=${encodeURIComponent(tool.name)}`;
+          };
+        }
+        capabilityListEl.appendChild(item);
+      }
+    }
+
+    function syncToolSelect() {
+      toolSelectEl.innerHTML = "";
+      for (const tool of state.tools) {
+        const option = document.createElement("option");
+        option.value = tool.name;
+        option.textContent = `${tool.group} / ${tool.name}`;
+        toolSelectEl.appendChild(option);
+      }
+    }
+
+    async function readJsonOrExplain(response) {
+      const text = await response.text();
+      try {
+        return { ok: true, json: text ? JSON.parse(text) : {}, raw: text };
+      } catch (_) {
+        return { ok: false, raw: text };
+      }
+    }
+
+    async function copyText(text, success, fail) {
+      try {
+        await navigator.clipboard.writeText(text);
+        show(success, true);
+      } catch (_) {
+        show(fail, false);
+      }
+    }
+
+    async function ensureAuthorizedAccount(account) {
+      const normalized = (account || "").trim();
+      if (!normalized) {
+        show("请先填写账号 ID", false);
+        return false;
+      }
+      try {
+        const response = await fetch(api("/api/tool-return/list?account=" + encodeURIComponent(normalized)));
+        const parsed = await readJsonOrExplain(response);
+        if (!parsed.ok || !response.ok) {
+          show((parsed.json && (parsed.json.detail || parsed.json.message)) || "请先保存该账号的 Cookie", false);
+          return false;
+        }
+        return true;
+      } catch (e) {
+        show("校验账号失败：" + e, false);
+        return false;
+      }
+    }
+
+    async function loadSaved() {
+      const { account } = readIdentity();
+      if (!account) {
+        show("请先填写账号名", false);
+        return;
+      }
+      let response;
+      try {
+        response = await fetch(api("/api/account-cookie?account=" + encodeURIComponent(account)));
+      } catch (e) {
+        show("请求失败（网络/CORS/反向代理未转发）：" + e, false);
+        return;
+      }
+
+      const parsed = await readJsonOrExplain(response);
+      if (!parsed.ok) {
+        show("响应不是 JSON：\n" + (parsed.raw || "").slice(0, 600), false);
+        return;
+      }
+
+      if (!response.ok) {
+        show(parsed.json.detail || parsed.json.message || "加载失败", false);
+        return;
+      }
+
+      $("cookie").value = parsed.json.cookie || "";
+      $("dds_cookie").value = parsed.json.dds_cookie || "";
+      show(`已加载账号「${account}」`, true);
+      await fetchToolReturnList();
+    }
+
+    async function save() {
+      const body = {
+        username: ($("username").value || "").trim(),
+        cookie: $("cookie").value || "",
+        dds_cookie: ($("dds_cookie").value || "").trim() || null,
+      };
+
+      let response;
+      try {
+        response = await fetch(api("/api/account-cookie"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+      } catch (e) {
+        show("请求失败（网络/CORS/反向代理未转发）：" + e, false);
+        return;
+      }
+
+      const parsed = await readJsonOrExplain(response);
+      if (!parsed.ok) {
+        show("响应不是 JSON：\n" + (parsed.raw || "").slice(0, 600), false);
+        return;
+      }
+
+      if (!response.ok) {
+        show(parsed.json.detail || parsed.json.message || "保存失败", false);
+        return;
+      }
+
+      show(parsed.json.message || "已保存", true);
+      await fetchToolReturnList();
+    }
+
+    async function testCookie() {
+      const cookie = $("cookie").value || "";
+      let response;
+      try {
+        response = await fetch(api("/api/account-cookie/test"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ cookie }),
+        });
+      } catch (e) {
+        show("请求失败（网络/CORS/反向代理未转发）：" + e, false);
+        return;
+      }
+
+      const parsed = await readJsonOrExplain(response);
+      if (!parsed.ok) {
+        show("响应不是 JSON：\n" + (parsed.raw || "").slice(0, 600), false);
+        return;
+      }
+
+      const data = parsed.json;
+      let msg = (data.ok ? "✓ " : "✗ ") + (data.message || "");
+      if (data.code != null) msg += "\ncode: " + data.code;
+      if (data.detail) msg += "\n详情: " + data.detail;
+      show(msg, !!data.ok);
+    }
+
+    async function fetchTools() {
+      state.tools = fallbackTools.slice();
+      syncToolSelect();
+      renderCapabilities(state.tools);
+      if (state.tools[0]) {
+        setActiveTool(state.tools[0].name);
+      }
+
+      let response;
+      try {
+        response = await fetch(api("/api/tool-debug/list"));
+      } catch (e) {
+        return;
+      }
+
+      const parsed = await readJsonOrExplain(response);
+      if (!parsed.ok || !response.ok) {
+        return;
+      }
+
+      state.tools = Array.isArray(parsed.json.tools) ? parsed.json.tools : [];
+      syncToolSelect();
+      renderCapabilities(state.tools);
+      if (state.tools[0]) {
+        setActiveTool(state.tools[0].name);
+      }
+    }
+
+    async function fetchToolReturnList() {
+      const { account } = readIdentity();
+      state.toolReturnMap = {};
+      if (!account) {
+        renderCapabilities(state.tools);
+        return;
+      }
+
+      try {
+        const response = await fetch(api("/api/tool-return/list?account=" + encodeURIComponent(account)));
+        const parsed = await readJsonOrExplain(response);
+        if (!parsed.ok || !response.ok) {
+          renderCapabilities(state.tools);
+          return;
+        }
+        for (const item of parsed.json.tools || []) {
+          state.toolReturnMap[item.tool_name] = item.templates || [];
+        }
+      } catch (_) {
+        // ignore and keep buttons hidden
+      }
+
+      renderCapabilities(state.tools);
+    }
+
+    async function runTool() {
+      const tool = currentTool();
+      if (!tool) {
+        show("请先选择一个工具", false);
+        return;
+      }
+
+      let args;
+      try {
+        args = JSON.parse(toolArgsEl.value || "{}");
+      } catch (e) {
+        show("参数 JSON 不合法：\n" + e.message, false);
+        return;
+      }
+
+      const identity = readIdentity();
+      updateRequestPreview();
+
+      if ($("requestMode").value === "template") {
+        toolOutputEl.textContent = pretty({
+          tool_name: tool.name,
+          account: identity.account,
+          role: identity.role,
+          name: identity.name,
+          args,
+        });
+        show("已生成调用模板，未实际执行", true);
+        return;
+      }
+
+      toolOutputEl.textContent = "执行中，请稍候…";
+
+      let response;
+      try {
+        response = await fetch(
+          api(`/api/tool-debug/call?account=${encodeURIComponent(identity.account)}&name=${encodeURIComponent(identity.name)}&role=${encodeURIComponent(identity.role)}`),
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              tool_name: tool.name,
+              args,
+            }),
+          }
+        );
+      } catch (e) {
+        toolOutputEl.textContent = String(e);
+        show("调试请求失败：" + e, false);
+        return;
+      }
+
+      const parsed = await readJsonOrExplain(response);
+      if (!parsed.ok) {
+        toolOutputEl.textContent = parsed.raw || "";
+        show("调试响应不是 JSON", false);
+        return;
+      }
+
+      toolOutputEl.textContent = pretty(parsed.json);
+      show(response.ok ? "工具调用完成" : "工具调用返回错误，请检查响应", response.ok);
+    }
+
+    $("btnSave").onclick = save;
+    $("btnTest").onclick = testCookie;
+    $("btnLoad").onclick = loadSaved;
+    $("btnCopyConfig").onclick = () => copyText($("mcpConfig").textContent, "已复制 MCP 配置模板", "复制失败，请手动复制");
+    $("btnRunTool").onclick = runTool;
+    $("btnResetArgs").onclick = () => {
+      const tool = currentTool();
+      if (!tool) return;
+      toolArgsEl.value = pretty(tool.example_args || {});
+      updateRequestPreview();
+      show("已恢复示例参数", true);
+    };
+    $("btnCopyArgs").onclick = () => copyText(toolArgsEl.value, "已复制参数 JSON", "复制失败，请手动复制");
+
+    $("username").addEventListener("input", () => {
+      renderMcpConfig();
+      updateRequestPreview();
+      fetchToolReturnList();
+    });
+    $("displayName").addEventListener("input", updateRequestPreview);
+    $("role").addEventListener("change", updateRequestPreview);
+    toolSelectEl.addEventListener("change", () => setActiveTool(toolSelectEl.value, false));
+    toolArgsEl.addEventListener("input", updateRequestPreview);
+    $("requestMode").addEventListener("change", updateRequestPreview);
+
+    const params = new URLSearchParams(window.location.search);
+    const preAccount = params.get("account");
+    if (preAccount) $("username").value = preAccount;
+
+    renderMcpConfig();
+    fetchTools().then(() => {
+      fetchToolReturnList();
+      updateRequestPreview();
+    });
+  </script>
+</body>
+</html>

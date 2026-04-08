@@ -1,19 +1,16 @@
 FROM python:3.10-slim
 
-# 设置工作目录
 WORKDIR /app
 
-# 设置构建时代理参数
 ARG HTTP_PROXY
 ARG HTTPS_PROXY
 
-# 设置环境变量
 ENV HTTP_PROXY=${HTTP_PROXY}
 ENV HTTPS_PROXY=${HTTPS_PROXY}
 ENV PYTHONUNBUFFERED=1
+ENV DATA_DIR=/app/data
 
-# 安装系统依赖
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     wget \
     gnupg \
@@ -39,29 +36,34 @@ RUN apt-get update && apt-get install -y \
     xdg-utils \
     && rm -rf /var/lib/apt/lists/*
 
-# 复制依赖文件
-COPY requirements.txt .
+COPY requirements.txt ./
 
-# 安装Python依赖
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 安装Playwright浏览器
-RUN playwright install chromium
-RUN playwright install-deps chromium
+RUN playwright install chromium && playwright install-deps chromium
 
-# 复制MCP服务器文件
-COPY lanhu_mcp_server.py .
+# 复制服务代码、扩展模块、静态页面和默认模板。
+COPY lanhu_mcp_server.py ./
+COPY lanhu_mcp_ext.py ./
+COPY lanhu_mcp_templates.py ./
+COPY static/ ./static/
+COPY db/ ./db/
 
-# 创建数据和日志目录
-RUN mkdir -p /app/data /app/logs
+# 运行时写入路径：
+# - /app/data: 截图、资源缓存、留言板数据
+# - /app/logs: 日志
+# - /app/db: 默认 markdown 模板 + 账号 Cookie + 用户自定义覆盖模板
+RUN mkdir -p /app/data /app/logs /app/db \
+    && find /app/db -type d -exec chmod 755 {} \; \
+    && find /app/db -type f -exec chmod 644 {} \;
 
-# 清理代理环境变量
+# 为 db 声明卷，容器首次启动时会带着镜像中的默认模板初始化卷内容，
+# 后续用户编辑 account_cookies.json 和 markdown 覆盖模板可持久化。
+VOLUME ["/app/db"]
+
 ENV HTTP_PROXY=
 ENV HTTPS_PROXY=
 
-# 暴露端口
 EXPOSE 8000
 
-# 运行MCP服务器（使用HTTP传输）
 CMD ["python", "lanhu_mcp_server.py"]
-

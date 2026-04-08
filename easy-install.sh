@@ -125,15 +125,15 @@ sleep 1
 
 echo ""
 echo -e "${BOLD}${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${BOLD}🍪 步骤 3/5: 配置蓝湖 Cookie${NC}"
+echo -e "${BOLD}🍪 步骤 3/5: 配置说明（Cookie 在网页里填，无需改 .env）${NC}"
 echo -e "${BOLD}${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 
-# 复制 .env.example 到 .env
+# 复制 .env.example 到 .env（端口等可选配置；LANHU_COOKIE 可不填，交给网页配置）
 if [ ! -f ".env" ]; then
     if [ -f ".env.example" ]; then
         cp .env.example .env
-        echo -e "${GREEN}✅ 已创建 .env 配置文件${NC}"
+        echo -e "${GREEN}✅ 已创建 .env 配置文件（可选：按需改端口等，不必改 Cookie）${NC}"
     else
         echo -e "${RED}❌ 未找到 .env.example 文件${NC}"
         exit 1
@@ -143,9 +143,15 @@ else
 fi
 
 echo ""
-echo -e "${YELLOW}这是唯一需要你手动操作的步骤，很简单！${NC}"
+echo -e "${BOLD}${GREEN}Cookie 在浏览器里配置即可${NC}，不需要打开 .env 粘贴 Cookie。"
 echo ""
-echo -e "${BOLD}请按照以下步骤操作：${NC}"
+echo -e "  • 服务启动后，在本机浏览器打开：${BOLD}http://localhost:<端口>/account-config${NC}"
+echo -e "  • 在页面填写「账号名」和从蓝湖复制的 Cookie，保存后写入 ${BOLD}db/account_cookies.json${NC}"
+echo -e "  • Cursor 里 MCP 的 URL 要带 ${BOLD}account=与网页里相同的账号名${NC}"
+echo ""
+echo -e "${YELLOW}可选（高级）${NC}：若 MCP 地址 ${BOLD}不带${NC} ${BOLD}account${NC}，才会用 .env 里的 ${BOLD}LANHU_COOKIE${NC}；多数情况只用网页配置即可。"
+echo ""
+echo -e "${BOLD}请先在蓝湖复制 Cookie（下一步启动服务后，粘贴到配置页）：${NC}"
 echo ""
 echo -e "  1️⃣  在浏览器打开：${BOLD}${BLUE}https://lanhuapp.com${NC} 并登录"
 echo ""
@@ -162,57 +168,38 @@ echo -e "  6️⃣  右侧找到 ${BOLD}\"Request Headers\"${NC} 部分"
 echo "     找到 \"Cookie:\" 开头的那一行"
 echo ""
 echo -e "  7️⃣  ${BOLD}选中并复制${NC} 整个 Cookie 值"
-echo "     （Cookie 很长，确保全部复制）"
-echo ""
-echo -e "  8️⃣  用文本编辑器打开当前目录下的 ${BOLD}.env${NC} 文件"
-echo -e "     找到 ${BOLD}LANHU_COOKIE${NC} 这一行"
-echo -e "     将 ${BOLD}your_lanhu_cookie_here${NC} 替换为你复制的 Cookie"
-echo -e "     ${YELLOW}注意：保留引号，只替换引号内的内容${NC}"
+echo "     （Cookie 很长，确保全部复制；可先留在剪贴板，启动服务后再粘贴到配置页）"
 echo ""
 echo -e "${BOLD}${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 
-# 如果系统支持，尝试打开浏览器和文件
+# 若系统支持，仅打开蓝湖（不再打开 .env）
 if command -v open &> /dev/null; then
-    echo -e "我可以帮你打开蓝湖网站和 .env 文件吗？(y/n) [${BOLD}y${NC}]: "
-    read -r open_files
-    open_files=${open_files:-y}
-    if [ "$open_files" = "y" ] || [ "$open_files" = "Y" ]; then
+    echo -e "需要帮你打开蓝湖网站吗？(y/n) [${BOLD}y${NC}]: "
+    read -r open_lanhu
+    open_lanhu=${open_lanhu:-y}
+    if [ "$open_lanhu" = "y" ] || [ "$open_lanhu" = "Y" ]; then
         open "https://lanhuapp.com" 2>/dev/null || true
-        open -e ".env" 2>/dev/null || open ".env" 2>/dev/null || true
-        echo -e "${GREEN}✅ 已打开浏览器和 .env 文件${NC}"
+        echo -e "${GREEN}✅ 已打开浏览器${NC}"
         echo ""
     fi
 fi
 
-echo -e "${BOLD}完成配置后，按 Enter 继续...${NC}"
+echo -e "${BOLD}准备好后按 Enter 继续（Cookie 可在启动服务后到配置页再填）${NC}"
 read
 
-# 读取 .env 文件中的 Cookie
-if [ -f ".env" ]; then
-    LANHU_COOKIE=$(grep "^LANHU_COOKIE=" .env | cut -d'"' -f2)
-fi
-
-# 验证 Cookie 不为空
-if [ -z "$LANHU_COOKIE" ] || [ "$LANHU_COOKIE" = "your_lanhu_cookie_here" ]; then
-    echo -e "${RED}❌ Cookie 未配置或配置不正确${NC}"
-    echo -e "${YELLOW}请确保在 .env 文件中正确设置了 LANHU_COOKIE${NC}"
-    exit 1
-fi
-
-# 简单验证 Cookie 格式
-if [[ ! "$LANHU_COOKIE" =~ "session=" ]] && [[ ! "$LANHU_COOKIE" =~ "user_token=" ]]; then
-    echo -e "${YELLOW}⚠️  Cookie 格式可能不正确${NC}"
-    echo "确定要继续吗？(y/n) [n]: "
-    read -r continue_anyway
-    if [ "$continue_anyway" != "y" ] && [ "$continue_anyway" != "Y" ]; then
-        echo "安装已取消"
-        exit 1
-    fi
+echo ""
+echo -e "下面用于生成 Cursor 配置示例：MCP URL 里的 ${BOLD}account=${NC} 必须与你稍后在 ${BOLD}账号配置页${NC} 填写的「账号名」一致。"
+echo -e "请输入该账号标识 [${BOLD}default${NC}]: "
+read -r MCP_ACCOUNT
+MCP_ACCOUNT=${MCP_ACCOUNT:-default}
+if [[ ! "$MCP_ACCOUNT" =~ ^[a-zA-Z0-9_.-]+$ ]]; then
+    echo -e "${YELLOW}⚠️  仅允许字母、数字、. _ -，已改为 default${NC}"
+    MCP_ACCOUNT=default
 fi
 
 echo ""
-echo -e "${GREEN}✅ Cookie 配置验证通过！${NC}"
+echo -e "${GREEN}✅ 示例将使用账号标识：${BOLD}${MCP_ACCOUNT}${NC}${GREEN}（请配置页填写同名）${NC}"
 sleep 1
 
 # ============================================
@@ -226,7 +213,7 @@ echo -e "${BOLD}${BLUE}━━━━━━━━━━━━━━━━━━━
 echo ""
 
 # 创建数据目录
-mkdir -p data logs
+mkdir -p data logs db
 echo -e "${GREEN}✅ 数据目录已创建${NC}"
 
 sleep 1
@@ -245,28 +232,45 @@ echo -e "${GREEN}是否现在启动服务？(y/n) [${BOLD}y${NC}]: ${NC}"
 read -r start_now
 start_now=${start_now:-y}
 
+# 与 lanhu_mcp_server.py 默认端口一致；若 .env 中配置了 SERVER_PORT 则优先
+SERVER_PORT=8100
+if [ -f ".env" ]; then
+    _sp_line=$(grep -E '^SERVER_PORT=' .env | head -1 || true)
+    if [ -n "$_sp_line" ]; then
+        _sp_val="${_sp_line#SERVER_PORT=}"
+        _sp_val="${_sp_val//\"/}"
+        _sp_val="${_sp_val//\'/}"
+        _sp_val="${_sp_val// /}"
+        [ -n "$_sp_val" ] && SERVER_PORT="$_sp_val"
+    fi
+fi
+
 if [ "$start_now" = "y" ] || [ "$start_now" = "Y" ]; then
     echo ""
     echo -e "${BOLD}${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${BOLD}${GREEN}🎉 安装成功！服务正在启动...${NC}"
     echo -e "${BOLD}${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
-    echo -e "${BOLD}服务器地址：${NC}http://localhost:8000/mcp"
+    echo -e "${BOLD}① 账号配置页（先打开，粘贴 Cookie 并保存）：${NC}"
+    echo -e "   ${BOLD}http://localhost:${SERVER_PORT}/account-config${NC}"
+    echo ""
+    echo -e "${BOLD}② MCP 地址：${NC}http://localhost:${SERVER_PORT}/mcp"
     echo ""
     echo -e "${BOLD}下一步：在 Cursor 中配置 MCP${NC}"
     echo ""
-    echo "请将以下配置添加到 Cursor 的 MCP 配置文件中："
+    echo "请将以下配置添加到 Cursor 的 MCP 配置文件中（account 须与配置页里的账号名一致）："
     echo ""
     echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    cat << 'MCP_CONFIG'
+    cat << MCP_CONFIG
 {
   "mcpServers": {
     "lanhu": {
-      "url": "http://localhost:8000/mcp?role=Developer&name=YourName"
+      "url": "http://localhost:${SERVER_PORT}/mcp?account=${MCP_ACCOUNT}&role=Developer&name=YourName"
     }
   }
 }
 MCP_CONFIG
+    echo -e "${YELLOW}提示：须先在配置页保存 Cookie；account 与网页里填的账号名一致即可（单人常用 default）${NC}"
     echo -e "${YELLOW}提示：部分 AI 开发工具不支持 URL 中文参数，建议使用英文${NC}"
     echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
@@ -278,7 +282,7 @@ MCP_CONFIG
     echo ""
     echo -e "按 ${BOLD}Ctrl+C${NC} 可以停止服务器"
     echo ""
-    echo -e "${GREEN}正在启动服务器...${NC}"
+    echo -e "${GREEN}正在启动服务器… 启动后请先打开上面的「账号配置页」完成 Cookie 配置。${NC}"
     echo ""
     
     # 运行服务器
@@ -292,6 +296,9 @@ else
     echo "稍后运行服务器，请执行："
     echo -e "  ${BOLD}source venv/bin/activate${NC}"
     echo -e "  ${BOLD}python lanhu_mcp_server.py${NC}"
+    echo ""
+    echo -e "${BOLD}启动后请先打开：${NC}http://localhost:${SERVER_PORT}/account-config （填写 Cookie）"
+    echo -e "${BOLD}MCP 地址示例：${NC}http://localhost:${SERVER_PORT}/mcp?account=${MCP_ACCOUNT}&role=Developer&name=YourName"
     echo ""
 fi
 

@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Tool Return Markdown 编辑器</title>
+  <style>
+    :root {
+      --bg: #f3efe6;
+      --panel: rgba(255, 252, 245, 0.84);
+      --line: rgba(117, 91, 53, 0.18);
+      --text: #1b1712;
+      --muted: #6d5b46;
+      --brand: #b45309;
+      --ok-bg: #ecfdf3;
+      --ok-line: #86efac;
+      --err-bg: #fff1f2;
+      --err-line: #fda4af;
+      --shadow: 0 24px 80px rgba(82, 54, 22, 0.12);
+      --radius-lg: 20px;
+      --radius-md: 14px;
+      --mono: "SFMono-Regular", "JetBrains Mono", Menlo, Consolas, monospace;
+      --sans: "PingFang SC", "Hiragino Sans GB", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: var(--sans);
+      color: var(--text);
+      background:
+        radial-gradient(circle at top left, rgba(240, 171, 41, 0.22), transparent 28%),
+        radial-gradient(circle at top right, rgba(15, 118, 110, 0.16), transparent 24%),
+        linear-gradient(180deg, #f8f2e8 0%, #f3efe6 42%, #efe8dc 100%);
+    }
+    .shell {
+      width: min(1500px, calc(100vw - 32px));
+      margin: 24px auto 40px;
+      display: grid;
+      gap: 18px;
+    }
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: 28px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+    .panel-head { padding: 22px 24px 0; }
+    .panel-head h1, .panel-head h2 { margin: 0; letter-spacing: -0.03em; }
+    .panel-head p { margin: 6px 0 0; color: var(--muted); line-height: 1.6; }
+    .panel-body { padding: 20px 24px 24px; }
+    .meta-grid, .editor-grid {
+      display: grid;
+      gap: 14px;
+    }
+    .meta-grid { grid-template-columns: repeat(3, minmax(220px, 1fr)); }
+    .editor-grid { grid-template-columns: minmax(420px, 1.1fr) minmax(360px, 0.9fr); align-items: start; }
+    label { display: block; margin-bottom: 8px; font-size: 13px; font-weight: 700; color: #3f3428; }
+    input, select, textarea {
+      width: 100%;
+      border: 1px solid rgba(117, 91, 53, 0.22);
+      background: rgba(255, 255, 255, 0.9);
+      border-radius: var(--radius-md);
+      padding: 12px 14px;
+      color: var(--text);
+      font: inherit;
+    }
+    textarea {
+      min-height: 540px;
+      resize: vertical;
+      font-family: var(--mono);
+      font-size: 13px;
+      line-height: 1.65;
+    }
+    .code-block {
+      border-radius: var(--radius-lg);
+      background: #191611;
+      color: #f8f4ec;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      padding: 16px;
+      white-space: pre-wrap;
+      font-family: var(--mono);
+      font-size: 12px;
+      line-height: 1.7;
+      overflow: auto;
+      min-height: 240px;
+    }
+    .status {
+      padding: 14px 16px;
+      border-radius: 18px;
+      border: 1px solid transparent;
+      white-space: pre-wrap;
+      font-size: 13px;
+      line-height: 1.65;
+      min-height: 54px;
+    }
+    .status.ok { background: var(--ok-bg); border-color: var(--ok-line); }
+    .status.err { background: var(--err-bg); border-color: var(--err-line); }
+    .actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 16px;
+    }
+    button {
+      appearance: none;
+      border: 0;
+      border-radius: 16px;
+      padding: 12px 16px;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .primary { background: linear-gradient(135deg, var(--brand), #d97706); color: #fff; }
+    .secondary { background: rgba(255,255,255,.85); color: var(--text); border: 1px solid rgba(117,91,53,.2); }
+    .muted { color: var(--muted); font-size: 13px; line-height: 1.6; }
+    .info-card {
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      background: rgba(255,255,255,.74);
+      padding: 16px;
+    }
+    @media (max-width: 1180px) {
+      .meta-grid, .editor-grid { grid-template-columns: 1fr; }
+      textarea { min-height: 360px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div id="status" class="status">加载中…</div>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h1>Tool Return Markdown 编辑器</h1>
+        <p>默认模板来自 <code>db/&lt;tool&gt;/return/*.md</code>。当前页面保存的是账号级覆盖模板，仅对当前 <code>account</code> 生效。</p>
+      </div>
+      <div class="panel-body">
+        <div class="meta-grid">
+          <div>
+            <label for="account">账号</label>
+            <input id="account" readonly />
+          </div>
+          <div>
+            <label for="tool">工具</label>
+            <input id="tool" readonly />
+          </div>
+          <div>
+            <label for="templateSelect">Markdown 模板</label>
+            <select id="templateSelect"></select>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>编辑区</h2>
+      </div>
+      <div class="panel-body">
+        <div class="editor-grid">
+          <div>
+            <label for="editor">当前账号生效内容</label>
+            <textarea id="editor" spellcheck="false"></textarea>
+            <div class="actions">
+              <button type="button" class="primary" id="btnSave">保存当前账号覆盖</button>
+              <button type="button" class="secondary" id="btnReset">恢复默认模板</button>
+              <button type="button" class="secondary" id="btnBack">返回配置页</button>
+            </div>
+            <div class="muted">保存后只影响当前账号；恢复默认会删除该账号下对应模板覆盖文件。</div>
+          </div>
+          <div class="info-card">
+            <label>默认模板内容</label>
+            <div class="code-block" id="defaultPreview">加载中…</div>
+            <div class="actions">
+              <button type="button" class="secondary" id="btnCopyDefault">复制默认模板</button>
+              <button type="button" class="secondary" id="btnCopyCurrent">复制当前内容</button>
+            </div>
+            <div class="muted" id="templateMeta">来源信息加载中…</div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const params = new URLSearchParams(location.search);
+    const state = {
+      account: params.get("account") || "",
+      tool: params.get("tool") || "",
+      template: params.get("template") || "",
+      templates: [],
+    };
+
+    const api = (path) => path.startsWith("http") ? path : window.location.origin + path;
+
+    function setStatus(message, ok = false) {
+      const el = $("status");
+      el.className = "status " + (ok ? "ok" : "err");
+      el.textContent = message;
+    }
+
+    async function readJson(response) {
+      const text = await response.text();
+      return text ? JSON.parse(text) : {};
+    }
+
+    async function copyText(text, okMsg, errMsg) {
+      try {
+        await navigator.clipboard.writeText(text);
+        setStatus(okMsg, true);
+      } catch (_) {
+        setStatus(errMsg, false);
+      }
+    }
+
+    async function loadTemplateList() {
+      const response = await fetch(api(`/api/tool-return/list?account=${encodeURIComponent(state.account)}`));
+      const json = await readJson(response);
+      if (!response.ok) throw new Error(json.detail || "无法加载模板列表");
+
+      const item = (json.tools || []).find((entry) => entry.tool_name === state.tool);
+      if (!item) throw new Error(`工具「${state.tool}」没有可编辑模板`);
+      state.templates = item.templates || [];
+      if (!state.templates.length) throw new Error(`工具「${state.tool}」没有可编辑模板`);
+
+      if (!state.template || !state.templates.includes(state.template)) {
+        state.template = state.templates[0];
+      }
+
+      $("account").value = state.account;
+      $("tool").value = state.tool;
+      $("templateSelect").innerHTML = state.templates
+        .map((name) => `<option value="${name}">${name}</option>`)
+        .join("");
+      $("templateSelect").value = state.template;
+    }
+
+    async function loadTemplateDetail() {
+      const response = await fetch(
+        api(`/api/tool-return/template?account=${encodeURIComponent(state.account)}&tool=${encodeURIComponent(state.tool)}&template=${encodeURIComponent(state.template)}`)
+      );
+      const json = await readJson(response);
+      if (!response.ok) throw new Error(json.detail || "无法读取模板内容");
+
+      $("editor").value = json.effective_content || "";
+      $("defaultPreview").textContent = json.default_content || "";
+      $("templateMeta").textContent = json.has_override
+        ? `当前来源：用户覆盖模板（account=${state.account}）`
+        : "当前来源：系统默认模板";
+      setStatus(`已加载 ${state.tool} / ${state.template}`, true);
+    }
+
+    async function saveTemplate() {
+      const response = await fetch(api("/api/tool-return/template"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          account: state.account,
+          tool: state.tool,
+          template: state.template,
+          content: $("editor").value,
+        }),
+      });
+      const json = await readJson(response);
+      if (!response.ok) {
+        setStatus(json.detail || "保存失败", false);
+        return;
+      }
+      setStatus(json.message || "保存成功", true);
+      await loadTemplateDetail();
+    }
+
+    async function resetTemplate() {
+      const response = await fetch(api("/api/tool-return/template/reset"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          account: state.account,
+          tool: state.tool,
+          template: state.template,
+        }),
+      });
+      const json = await readJson(response);
+      if (!response.ok) {
+        setStatus(json.detail || "恢复默认失败", false);
+        return;
+      }
+      setStatus(json.message || "已恢复默认模板", true);
+      await loadTemplateDetail();
+    }
+
+    async function init() {
+      if (!state.account || !state.tool) {
+        setStatus("缺少 account 或 tool 参数", false);
+        return;
+      }
+      try {
+        await loadTemplateList();
+        await loadTemplateDetail();
+      } catch (error) {
+        setStatus(String(error.message || error), false);
+      }
+    }
+
+    $("templateSelect").addEventListener("change", async (event) => {
+      state.template = event.target.value;
+      await loadTemplateDetail();
+    });
+    $("btnSave").onclick = saveTemplate;
+    $("btnReset").onclick = resetTemplate;
+    $("btnBack").onclick = () => {
+      window.location.href = `${api("/account-config")}?account=${encodeURIComponent(state.account)}`;
+    };
+    $("btnCopyDefault").onclick = () => copyText($("defaultPreview").textContent, "已复制默认模板", "复制默认模板失败");
+    $("btnCopyCurrent").onclick = () => copyText($("editor").value, "已复制当前内容", "复制当前内容失败");
+
+    init();
+  </script>
+</body>
+</html>

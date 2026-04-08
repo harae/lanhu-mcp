@@ -43,6 +43,13 @@ from bs4 import BeautifulSoup
 from fastmcp import FastMCP
 from fastmcp.utilities.types import Image
 from playwright.async_api import async_playwright
+from lanhu_mcp_ext import (
+    AccountCookieStore,
+    build_http_middleware_from_env,
+    ensure_account_cookie_file,
+    register_extension_routes,
+)
+from lanhu_mcp_templates import render_tool_return_markdown
 
 # 创建FastMCP服务器
 mcp = FastMCP("Lanhu Axure Extractor")
@@ -65,6 +72,12 @@ FEISHU_WEBHOOK_URL = os.getenv("FEISHU_WEBHOOK_URL", DEFAULT_FEISHU_WEBHOOK)
 # 数据存储目录
 DATA_DIR = Path(os.getenv("DATA_DIR", "./data"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+# 多账号 Cookie 映射文件
+DB_DIR = Path(__file__).resolve().parent / "db"
+DB_DIR.mkdir(parents=True, exist_ok=True)
+ACCOUNT_COOKIE_FILE = DB_DIR / "account_cookies.json"
+ensure_account_cookie_file(ACCOUNT_COOKIE_FILE)
 
 # HTTP 请求超时时间（秒）
 HTTP_TIMEOUT = float(os.getenv("HTTP_TIMEOUT", "30"))
@@ -129,7 +142,6 @@ ROLE_MAPPING_RULES = [
     # 开发（通用，优先级最低）
     (["开发", "dev", "developer", "程序员", "coder", "engineer", "工程师"], "开发"),
 ]
-
 
 # ==================== 设计图JSON转HTML转换器 ====================
 
@@ -2089,7 +2101,7 @@ def get_user_info(ctx: Context) -> tuple:
     """
     从URL query参数获取用户信息
     
-    MCP连接URL格式：http://xxx:port/mcp?role=后端&name=张三
+    MCP连接URL格式：http://xxx:port/mcp?account=dev01&role=后端&name=张三
     """
     try:
         # 使用 FastMCP 提供的 get_http_request 获取当前请求
@@ -2097,12 +2109,13 @@ def get_user_info(ctx: Context) -> tuple:
         req = get_http_request()
         
         # 从 query 参数获取
+        account = req.query_params.get('account', '').strip()
         name = req.query_params.get('name', '匿名')
         role = req.query_params.get('role', '未知')
-        return name, role
+        return account, name, role
     except Exception:
         pass
-    return '匿名', '未知'
+    return '', '匿名', '未知'
 
 
 def _clean_message_dict(msg: dict, current_user_name: str = None) -> dict:
@@ -2141,7 +2154,7 @@ def get_project_id_from_url(url: str) -> str:
     return params.get('project_id', '')
 
 
-async def _fetch_metadata_from_url(url: str) -> dict:
+async def _fetch_metadata_from_url(url: str, account: str | None = None) -> dict:
     """
     从蓝湖URL获取标准元数据（10个字段）- 支持基于版本号的永久缓存
     
@@ -2163,7 +2176,7 @@ async def _fetch_metadata_from_url(url: str) -> dict:
         'doc_url': None
     }
     
-    extractor = LanhuExtractor()
+    extractor = LanhuExtractor(account=account)
     try:
         params = extractor.parse_url(url)
         project_id = params.get('project_id')
@@ -2253,12 +2266,21 @@ class LanhuExtractor:
 
     CACHE_META_FILE = ".lanhu_cache.json"  # 缓存元数据文件名
 
-    def __init__(self):
+    def __init__(self, account: str | None = None):
+        self.account = account
+        self.cookie_store = AccountCookieStore(
+            file_path=ACCOUNT_COOKIE_FILE,
+            default_cookie=COOKIE,
+            default_dds_cookie=DDS_COOKIE,
+        )
+        lanhu_cookie, dds_cookie = self.cookie_store.get_cookies(account)
+        self.cookie = lanhu_cookie
+        self.dds_cookie = dds_cookie
         headers = {
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
             "Referer": "https://lanhuapp.com/web/",
             "Accept": "application/json, text/plain, */*",
-            "Cookie": COOKIE,
+            "Cookie": self.cookie,
             "sec-ch-ua": '"Chromium";v="142", "Google Chrome";v="142", "Not_A Brand";v="99"',
             "sec-ch-ua-mobile": "?0",
             "sec-ch-ua-platform": '"macOS"',
@@ -3007,7 +3029,7 @@ class LanhuExtractor:
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
             "Accept": "application/json, text/plain, */*",
             "Referer": "https://dds.lanhuapp.com/",
-            "Cookie": DDS_COOKIE,
+            "Cookie": self.dds_cookie,
             "Authorization": "Basic dW5kZWZpbmVkOg==",
         }
         async with httpx.AsyncClient(timeout=HTTP_TIMEOUT, headers=dds_headers, follow_redirects=True) as dds_client:
@@ -3472,7 +3494,8 @@ async def screenshot_page_internal(resource_dir: str, page_names: List[str], out
 
 @mcp.tool()
 async def lanhu_resolve_invite_link(
-    invite_url: Annotated[str, "Lanhu invite link. Example: https://lanhuapp.com/link/#/invite?sid=xxx"]
+    invite_url: Annotated[str, "Lanhu invite link. Example: https://lanhuapp.com/link/#/invite?sid=xxx"],
+    ctx: Context = None
 ) -> dict:
     """
     Resolve Lanhu invite/share link to actual project URL
@@ -3485,9 +3508,16 @@ async def lanhu_resolve_invite_link(
         Resolved URL and parsed parameters
     """
     try:
+        account, _, _ = get_user_info(ctx) if ctx else ('', '匿名', '未知')
+        cookie, _ = AccountCookieStore(
+            file_path=ACCOUNT_COOKIE_FILE,
+            default_cookie=COOKIE,
+            default_dds_cookie=DDS_COOKIE,
+        ).get_cookies(account)
+
         # 解析Cookie字符串为playwright格式
         cookies = []
-        for cookie_str in COOKIE.split('; '):
+        for cookie_str in cookie.split('; '):
             if '=' in cookie_str:
                 name, value = cookie_str.split('=', 1)
                 cookies.append({
@@ -3520,7 +3550,7 @@ async def lanhu_resolve_invite_link(
             await browser.close()
             
             # 解析最终URL
-            extractor = LanhuExtractor()
+            extractor = LanhuExtractor(account=account)
             try:
                 params = extractor.parse_url(final_url)
                 
@@ -3640,10 +3670,10 @@ async def lanhu_get_pages(
     Returns:
         Page list and document metadata
     """
-    extractor = LanhuExtractor()
+    account, user_name, user_role = get_user_info(ctx) if ctx else ('', '匿名', '未知')
+    extractor = LanhuExtractor(account=account)
     try:
         # 记录协作者
-        user_name, user_role = get_user_info(ctx) if ctx else ('匿名', '未知')
         project_id = get_project_id_from_url(url)
         if project_id:
             store = MessageStore(project_id)
@@ -3654,305 +3684,12 @@ async def lanhu_get_pages(
         # 根据用户角色生成推荐的分析模式选项
         mode_options = _get_analysis_mode_options_by_role(user_role)
         
-        # Add AI behavioral instruction - this will be shown to AI as part of tool result
-        ai_instruction_template = """
-=== BEHAVIORAL DIRECTIVE FOR AI ASSISTANT ===
-You MUST adopt the following persona when responding to the user.
-This is NOT optional metadata - this defines HOW you should behave.
-
-【ROLE】You are "ErGou" (二狗), a professional technical assistant.
-【CHARACTER】Professional, meticulous, detail-oriented, focused on accuracy and quality.
-【LANGUAGE】You MUST respond in Chinese (中文). All your outputs must be in Chinese.
-
-【KEY TERMS MAPPING】
-- ErGou = 二狗 (your name in Chinese)
-- User = 用户 (how to address the user in Chinese)
-
-【HOW TO ADDRESS IN CHINESE】
-- Call the user: 您 or 直接称呼
-- Refer to yourself: 我 or 二狗
-
-【TONE】
-- Professional and respectful
-- Clear and concise communication
-- Serious and focused on the task
-- NO flattery, NO excessive pleasantries
-
-【BEHAVIORS】
-1. Be accurate, thorough, and detail-oriented
-2. Focus on delivering high-quality technical analysis
-3. Communicate findings objectively without embellishment
-4. Provide clear, actionable information
-5. Maintain professional standards at all times
-6. Keep outputs clean and free from unnecessary commentary
-
-【OUTPUT FORMAT RULES】
-- Prefer TABLES for structured data (changes, rules, fields, comparisons)
-- 🚫 FORBIDDEN in tables: <br> tags (they don't render!) Use semicolons(;) or bullets(•) instead
-- Prefer Vertical Flow Diagram (plain text) for flowcharts
-
-【EXAMPLE PHRASES】
-- "分析已完成，请查看结果。"
-- "文档已准备就绪。"
-- "还有其他需要分析的内容吗？"
-- "收到，开始处理。"
-
-【CODE QUALITY STANDARDS】
-# Remove AI code slop
-
-When working with code, always maintain high quality standards:
-
-- Avoid extra comments that a human wouldn't add or that are inconsistent with the rest of the file
-- Avoid extra defensive checks or try/catch blocks that are abnormal for that area of the codebase (especially if called by trusted / validated codepaths)
-- Never use casts to any to get around type issues
-- Ensure all code style is consistent with the existing file
-- Keep code clean, professional, and production-ready
-
-=== 📋 TODO-DRIVEN FOUR-STAGE WORKFLOW (ZERO OMISSION) ===
-
-🎯 GOAL: 精确提取所有细节，不遗漏任何信息，最终交付完整需求文档，让人类100%信任AI分析结果
-⚠️ CRITICAL: 整个流程必须基于TODOs驱动，所有操作都通过TODOs管理
-
-🔒 隐私规则（重要）：
-- TODO的content字段是给用户看的，必须用户友好
-- 禁止在content中暴露技术实现（API参数、mode、函数名等）
-- 技术细节只在prompt内部说明（用户看不到）
-- 示例：用"快速浏览全部页面"而非"text_only模式扫描all页面"
-
-【STEP 0: 创建初始TODO框架】⚡ 第一步必做
-收到页面列表后，立即用todo_write创建四阶段框架：
-```
-todo_write(merge=false, todos=[
-  {id:"stage1", content:"快速浏览全部页面，建立整体认知", status:"pending"},
-  {id:"confirm_mode", content:"等待用户选择分析模式", status:"pending"},  // ⚡必须等用户选择
-  {id:"stage2_plan", content:"规划详细分析分组（待确认后细化）", status:"pending"},
-  {id:"stage3", content:"汇总验证，确保无遗漏", status:"pending"},
-  {id:"stage4", content:"生成交付文档", status:"pending"}
-])
-```
-⚠️ 技术实现说明（用户看不到）：
-- stage1 执行时调用: mode="text_only", page_names="all"
-- confirm_mode 是用户交互步骤，必须等用户选择分析模式
-- stage2_* 执行时调用: mode="full", analysis_mode=[用户选择的模式], page_names=[该组页面]
-- stage4 不调用工具，直接基于提取结果生成文档
-
-【STAGE 1: 全局文本扫描 - 建立上帝视角】
-1. 标记stage1为in_progress
-2. 调用 lanhu_get_ai_analyze_page_result(page_names="all", mode="text_only")
-3. 快速阅读文本，输出结构化分析（必须用表格）：
-   | 模块名 | 包含页面 | 核心功能 | 业务流程 |
-   |--------|---------|---------|---------|
-   | 用户认证 | 登录,注册,找回密码 | 用户认证 | 登录→首页 |
-4. **设计分组策略**（基于业务逻辑）
-5. 标记stage1为completed
-6. **⚡【必须】询问用户选择分析模式**（标记confirm_mode为in_progress）：
-   ⚠️ 用户必须选择分析模式，否则不能继续！
-   ```
-   全部页面已浏览完毕。
-   
-   📊 发现以下模块：
-   [列出分组表格，标注每组页面数]
-   
-   请选择分析角度：
-   {MODE_OPTIONS_PLACEHOLDER}
-   
-   也可以自定义需求，比如"简单看看"、"只看数据流向"等。
-   
-   ⚠️ 请告知您的选择和要分析的模块，以便继续分析工作。
-   ```
-   
-   ⚠️ 等待用户回复后，标记confirm_mode为completed，记住用户选择的analysis_mode，再执行步骤7
-   
-7. **⚡反向更新TODOs**（关键步骤）：
-   根据用户选择的分析模式更新TODO描述：
-```
-todo_write(merge=true, todos=[
-  {id:"stage2_plan", status:"cancelled"},  // 取消占位TODO
-  {id:"stage2_1", content:"[模式名]分析：用户认证模块（3页）", status:"pending"},
-  {id:"stage2_2", content:"[模式名]分析：订单管理模块（3页）", status:"pending"},
-  // ... 根据STAGE1结果和用户指令动态生成
-  // ⚠️ [模式名] = 开发视角/测试视角/快速探索
-  // ⚠️ 如果用户只要求看指定模块，则只创建对应模块的TODOs
-])
-```
-
-【STAGE 2: 分组深度分析 - 根据分析模式提取】
-逐个执行stage2_*的TODOs：
-1. 标记当前TODO为in_progress
-2. 调用 lanhu_get_ai_analyze_page_result(page_names=[该组页面], mode="full", analysis_mode=[用户选择的模式])
-   ⚠️ analysis_mode 必须使用用户在 confirm_mode 阶段选择的模式：
-   - "developer" = 开发视角
-   - "tester" = 测试视角
-   - "explorer" = 快速探索
-
-3. **根据分析模式输出不同内容**：
-   工具返回会包含对应模式的 prompt 指引，按照指引输出即可。
-   
-   三种模式的核心区别：
-   
-   【开发视角】提取所有细节，供开发写代码：
-   - 功能清单表（功能、输入、输出、规则、异常）
-   - 字段规则表（必填、类型、长度、校验、提示）
-   - 全局关联（数据依赖、输出、跳转）
-   - AI理解与建议（对不清晰的地方）
-   
-   【测试视角】提取测试场景，供测试写用例：
-   - 正向场景（前置条件→步骤→期望结果）
-   - 异常场景（触发条件→期望结果）
-   - 字段校验规则表（含测试边界值）
-   - 状态变化表
-   - 联调测试点
-   
-   【快速探索】提取核心功能，供需求评审：
-   - 模块核心功能（3-5个点，一句话描述）
-   - 依赖关系识别
-   - 关键特征标注（外部接口、支付、审批等）
-   - 评审讨论点
-
-4. **所有模式都必须输出的：变更类型识别**
-   ```
-   🔍 变更类型识别：
-   - 类型：🆕新增 / 🔄修改 / ❓未明确
-   - 判断依据：[引用文档关键证据]
-   - 结论：[一句话说明]
-   ```
-
-5. 标记当前TODO为completed
-6. 继续下一个stage2_* TODO
-
-【STAGE 3: 反向验证 - 确保零遗漏】
-1. 标记stage3为in_progress
-2. **汇总STAGE2所有结果，根据分析模式验证不同内容**：
-   
-   【开发视角】验证：
-   - 功能点是否完整？字段是否齐全？
-   - 业务规则是否清晰？异常处理是否覆盖？
-   
-   【测试视角】验证：
-   - 测试场景是否覆盖核心功能？
-   - 异常场景是否完整？边界值是否标注？
-   
-   【快速探索】验证：
-   - 模块划分是否合理？依赖关系是否清晰？
-   - 变更类型是否都已识别？
-   
-3. **汇总变更类型统计**（所有模式都要）：
-   - 🆕 全新功能：X个模块
-   - 🔄 功能修改：Y个模块
-   - ❓ 未明确：Z个模块（列出需确认）
-   
-4. 生成"待确认清单"（汇总所有⚠️的项）
-5. 标记stage3为completed
-
-【STAGE 4: 生成交付文档 - 根据分析模式输出】⚠️ 必做阶段
-1. 标记stage4为in_progress
-2. **根据分析模式生成对应交付物**（工具返回的 prompt 中有详细格式）：
-
-   【开发视角】输出：详细需求文档 + 全局流程图
-   ```
-   # 需求文档总结
-   
-   ## 📊 文档概览
-   - 总页面数、模块数、变更类型统计、待确认项数
-   
-   ## 🎯 需求性质分析
-   - 新增/修改统计表 + 判断依据
-   
-   ## 🌍 全局业务流程图（⚡核心交付物）
-   - 包含所有模块的完整细节
-   - 所有判断条件、分支、异常处理
-   - 用文字流程图（Vertical Flow Diagram）
-   
-   ## 模块X：XXX模块
-   ### 功能清单（表格）
-   ### 字段规则（表格）
-   ### 模块总结
-   
-   ## ⚠️ 待确认事项
-   ```
-   
-   【测试视角】输出：测试计划文档
-   ```
-   # 测试计划文档
-   
-   ## 📊 测试概览
-   - 模块数、测试场景数（正向X个，异常Y个）
-   - 变更类型统计（🆕全量测试 / 🔄回归测试）
-   
-   ## 🎯 需求性质分析（影响测试范围）
-   
-   ## 测试用例清单（按模块）
-   ### 模块X：XXX
-   #### 正向场景（P0）
-   #### 异常场景（P1）
-   #### 字段校验表
-   
-   ## 📋 测试数据准备清单
-   ## 🔄 回归测试提示
-   ## ❓ 测试疑问汇总
-   ```
-   
-   【快速探索】输出：需求评审文档（像PPT）
-   ```
-   # 需求评审 - XXX功能
-   
-   ## 📊 文档概览（1分钟了解全局）
-   ## 🎯 需求性质分析（新增/修改统计 + 判断依据）
-   ## 📦 模块清单表
-   | 序号 | 模块名 | 变更类型 | 核心功能点 | 依赖模块 | 页面数 |
-   
-   ## 🔄 数据流向图（展示模块间依赖关系）
-   ## 📅 开发顺序建议（基于依赖关系）
-   ## 🔗 关键依赖关系说明
-   ## ⚠️ 风险和待确认事项
-   ## 💼 前后端分工参考（仅罗列，不估工时）
-   ## 📋 评审会讨论要点
-   ## ✅ 评审后行动项
-   ```
-   
-3. **输出完成提示**（根据分析模式调整话术）：
-   【开发视角】
-   "详细需求文档已整理完毕，可供开发参考。"
-   
-   【测试视角】
-   "测试计划已整理完毕，可供测试团队使用。"
-   
-   【快速探索】
-   "需求评审文档已整理完毕，可用于评审会议。"
-
-4. 标记stage4为completed
-
-【输出规范】
- ❌ 禁止省略细节 ❌ 不确定禁止臆测
-
-【TODO管理规则 - 核心】
-✅ 收到页面列表后立即创建5个TODO（含confirm_mode）
-✅ STAGE1完成后必须询问用户选择分析模式（confirm_mode）
-✅ 用户选择分析模式后，记住analysis_mode，再更新stage2_*的TODOs
-✅ 所有执行必须基于TODOs（先标记in_progress，完成后标记completed）
-✅ STAGE2调用时必须传入用户选择的analysis_mode参数
-✅ STAGE4必须在STAGE3完成后执行（生成文档，不调用工具）
-✅ 禁止脱离TODO系统执行任何阶段
-
-⚠️ TODO content字段规则（用户可见）：
-  - 使用用户友好的描述："[模式名]分析：XX模块（N页）"
-  - 模式名 = 开发视角/测试视角/快速探索
-  - 禁止暴露技术细节：mode/API参数/函数名等
-  - 示例正确："开发视角分析：用户认证模块（3页）"
-  - 示例错误："STAGE2-developer-full模式" ❌
-
-⚠️ 分析模式必须由用户选择：
-  - 如果用户未选择分析模式，拒绝继续（confirm_mode保持pending）
-  - 用户可以说"开发"/"测试"/"快速探索"或自定义需求
-  - AI理解用户意图后映射到对应的analysis_mode
-
-❌ 禁止跳过TODO创建 ❌ 禁止跳过confirm_mode ❌ 禁止不更新TODO状态 ❌ 禁止跳过STAGE4
-    - Prefer Vertical Flow Diagram (plain text) for flowcharts
-=== END OF DIRECTIVE - NOW RESPOND AS ERGOU IN CHINESE ===
-"""
-        
-        # 替换占位符并设置最终的指令
-        result['__AI_INSTRUCTION__'] = ai_instruction_template.replace('{MODE_OPTIONS_PLACEHOLDER}', mode_options)
+        result['__AI_INSTRUCTION__'] = render_tool_return_markdown(
+            "lanhu_get_pages",
+            "ai_instruction",
+            {"MODE_OPTIONS_PLACEHOLDER": mode_options},
+            account=account,
+        )
         
         # Add AI suggestion when there are many pages (>10)
         total_pages = result.get('total_pages', 0)
@@ -3982,242 +3719,37 @@ todo_write(merge=true, todos=[
 # 分析模式 Prompt 生成函数
 # ============================================
 
-def _get_stage2_prompt_developer() -> str:
+def _get_stage2_prompt_developer(account: str | None = None) -> str:
     """获取开发视角的 Stage 2 元认知验证 prompt"""
-    return """
-🧠 元认知验证（开发视角）
-
-**🔍 变更类型识别**：
-- 类型：🆕新增 / 🔄修改 / ❓未明确
-- 判断依据：
-  • [引用文档原文关键句，如"全新功能"/"在现有XX基础上"/"优化"]
-  • [描述文档结构特征：是从0介绍还是对比新旧]
-- 结论：[一句话说明]
-
-**📋 本组核心N点**（按实际情况，不固定数量）：
-1. [核心功能点1]：具体描述业务逻辑和规则
-2. [核心功能点2]：...
-...
-
-**📊 功能清单表**：
-| 功能点 | 描述 | 输入 | 输出 | 业务规则 | 异常处理 |
-|--------|------|------|------|----------|----------|
-
-**📋 字段规则表**（如果页面有表单/字段）：
-| 字段名 | 必填 | 类型 | 长度/格式 | 校验规则 | 错误提示 |
-|--------|------|------|-----------|----------|----------|
-
-**🔗 与全局关联**（按需输出，有则写）：
-• 数据依赖：依赖「XX模块」的XX数据/状态
-• 数据输出：数据流向「XX模块」用于XX
-• 交互跳转：完成后跳转/触发「XX模块」
-• 状态同步：与「XX模块」的XX状态保持一致
-
-**⚠️ 遗漏/矛盾检查**（按需输出）：
-• ⚠️ [不清晰的地方]：具体描述
-• ⚠️ [潜在矛盾]：描述发现的逻辑矛盾
-• 🎨 [UI与文字冲突]：对比UI和文字说明的不一致
-• ✅ [已确认清晰]：关键逻辑已明确
-
-**🤖 AI理解与建议**（对不清晰的地方，按需输出）：
-💡 [对XX的理解]：
-   • 需求原文：[引用]
-   • AI理解：[推测]
-   • 推理依据：[说明]
-   • 建议：[给产品/开发的建议]
-"""
+    return render_tool_return_markdown("lanhu_get_ai_analyze_page_result", "stage2_developer", account=account)
 
 
-def _get_stage2_prompt_tester() -> str:
+def _get_stage2_prompt_tester(account: str | None = None) -> str:
     """获取测试视角的 Stage 2 元认知验证 prompt"""
-    return """
-🧠 元认知验证（测试视角）
-
-**🔍 变更类型识别**：
-- 类型：🆕新增 / 🔄修改 / ❓未明确
-- 判断依据：[引用文档关键证据]
-- 测试影响：🆕全量测试 / 🔄回归+增量测试
-
-**📋 测试场景提取**：
-
-### ✅ 正向场景（P0核心功能）
-**场景1：[场景名称]**
-- 前置条件：[列出]
-- 操作步骤：
-  1. [步骤1]
-  2. [步骤2]
-  ...
-- 期望结果：[具体描述]
-- 数据准备：[需要什么测试数据]
-
-**场景2：[场景名称]**
-...
-
-### ⚠️ 异常场景（P1边界和异常）
-**异常1：[场景名称]**
-- 触发条件：[什么情况下]
-- 操作步骤：[...]
-- 期望结果：[错误提示/页面反应]
-
-**异常2：[场景名称]**
-...
-
-**📋 字段校验规则表**：
-| 字段名 | 必填 | 长度/格式 | 校验规则 | 错误提示文案 | 测试边界值 |
-|--------|------|-----------|----------|-------------|-----------|
-
-**🔄 状态变化表**：
-| 操作 | 操作前状态 | 操作后状态 | 界面变化 |
-|------|-----------|-----------|---------|
-
-**⚠️ 特殊测试点**：
-- 并发场景：[哪些操作可能并发]
-- 权限验证：[哪些操作需要权限]
-- 数据边界：[数据量大时的表现]
-
-**🔗 联调测试点**（与其他模块的交互）：
-- 依赖「XX模块」：[测试时需要先准备什么]
-- 影响「XX模块」：[操作后需要验证哪里]
-
-**❓ 测试疑问**（需产品/开发澄清）：
-- ⚠️ [哪里不清晰，无法编写测试用例]
-"""
+    return render_tool_return_markdown("lanhu_get_ai_analyze_page_result", "stage2_tester", account=account)
 
 
-def _get_stage2_prompt_explorer() -> str:
+def _get_stage2_prompt_explorer(account: str | None = None) -> str:
     """获取快速探索视角的 Stage 2 元认知验证 prompt"""
-    return """
-🧠 元认知验证（快速探索视角）
-
-**🔍 变更类型识别**：
-- 类型：🆕新增 / 🔄修改 / ❓未明确
-- 判断依据：
-  • [引用文档原文关键句]
-  • [指出关键信号词："全新"/"现有"/"优化"等]
-- 结论：[一句话说明]
-
-**📦 模块核心功能**（3-5个功能点，不深入细节）：
-1. [功能点1]：[一句话描述]
-2. [功能点2]：[一句话描述]
-3. [功能点3]：[一句话描述]
-...
-
-**🔗 依赖关系识别**：
-- 依赖输入：需要「XX模块」提供[具体什么数据/状态]
-- 输出影响：数据会流向「XX模块」用于[什么用途]
-- 依赖强度：强依赖（必须先完成）/ 弱依赖（可独立开发）
-
-**💡 关键特征标注**（客观事实，不评价）：
-- 涉及外部接口：[是/否，哪些]
-- 涉及支付流程：[是/否]
-- 涉及审批流程：[是/否，几级]
-- 涉及文件上传：[是/否]
-
-**⚠️ 需求问题**（影响评审决策）：
-- 逻辑不清晰：[具体哪里]
-- 逻辑矛盾：[哪里矛盾]
-- 缺失信息：[缺什么]
-
-**🎯 评审讨论点**（供会议讨论）：
-- 给产品：[需要澄清的问题]
-- 给开发：[需要技术评估的点]
-- 给测试：[测试环境/数据准备问题]
-"""
+    return render_tool_return_markdown("lanhu_get_ai_analyze_page_result", "stage2_explorer", account=account)
 
 
-def _get_stage4_prompt_developer() -> str:
+def _get_stage4_prompt_developer(account: str | None = None) -> str:
     """获取开发视角的 Stage 4 交付物 prompt"""
-    return """
-【STAGE 4 输出要求 - 开发视角】
-
-输出结构：
-1. # 需求文档总结
-2. ## 📊 文档概览（页面数、模块数、变更类型统计、待确认项数）
-3. ## 🎯 需求性质分析（新增/修改统计表 + 判断依据）
-4. ## 🌍 全局业务流程图（⚡核心交付物）
-   - 包含所有模块的完整细节
-   - 所有判断条件、分支、异常处理
-   - 所有字段校验规则和数据流转
-   - 模块间的联系和数据传递
-   - 用文字流程图（Vertical Flow Diagram）
-5. ## 模块X：XXX模块
-   ### 功能清单（表格）
-   ### 字段规则（表格）
-   ### 模块总结（列举式，不画单独流程图）
-6. ## ⚠️ 待确认事项（所有疑问汇总）
-
-质量标准：开发看完能写代码，测试看完能写用例，0遗漏
-"""
+    return render_tool_return_markdown("lanhu_get_ai_analyze_page_result", "stage4_developer", account=account)
 
 
-def _get_stage4_prompt_tester() -> str:
+def _get_stage4_prompt_tester(account: str | None = None) -> str:
     """获取测试视角的 Stage 4 交付物 prompt"""
-    return """
-【STAGE 4 输出要求 - 测试视角】
-
-输出结构：
-1. # 测试计划文档
-2. ## 📊 测试概览
-   - 模块数、测试场景数（正向X个，异常Y个）
-   - 变更类型统计（🆕全量测试 / 🔄回归测试）
-3. ## 🎯 需求性质分析（影响测试范围）
-4. ## 测试用例清单（按模块）
-   ### 模块X：XXX
-   #### 正向场景（P0）
-   - 场景1：前置条件 → 步骤 → 期望结果
-   - 场景2：...
-   #### 异常场景（P1）
-   - 异常1：触发条件 → 期望结果
-   #### 字段校验表
-   | 字段 | 必填 | 规则 | 错误提示 | 边界值测试 |
-5. ## 📋 测试数据准备清单
-6. ## 🔄 回归测试提示（如有修改类型模块）
-7. ## ❓ 测试疑问汇总（需澄清才能写用例）
-
-质量标准：测试人员拿到后可直接写用例，知道测什么、怎么测
-"""
+    return render_tool_return_markdown("lanhu_get_ai_analyze_page_result", "stage4_tester", account=account)
 
 
-def _get_stage4_prompt_explorer() -> str:
+def _get_stage4_prompt_explorer(account: str | None = None) -> str:
     """获取快速探索视角的 Stage 4 交付物 prompt"""
-    return """
-【STAGE 4 输出要求 - 快速探索/需求评审视角】
-
-输出结构（像评审会PPT）：
-1. # 需求评审 - XXX功能
-2. ## 📊 文档概览（1分钟了解全局）
-   - 总页面数、模块数
-   - 需求性质统计（新增X个/修改Y个）
-3. ## 🎯 需求性质分析
-   | 变更类型 | 模块数 | 模块列表 | 判断依据 |
-4. ## 📦 模块清单表
-   | 序号 | 模块名 | 变更类型 | 核心功能点(3-5个) | 依赖模块 | 页面数 |
-5. ## 🔄 数据流向图（文字或ASCII图）
-   - 展示模块间依赖关系
-   - 数据传递方向
-6. ## 📅 开发顺序建议（基于依赖关系）
-   - 第一批（无依赖）：...
-   - 第二批（依赖第一批）：...
-   - 可并行：...
-7. ## 🔗 关键依赖关系说明
-   | 模块 | 依赖什么 | 依赖原因 | 影响 |
-8. ## ⚠️ 风险和待确认事项
-   - 需求不清晰：...
-   - 逻辑矛盾：...
-   - 外部依赖：...
-9. ## 💼 前后端分工参考（仅罗列，不估工时）
-10. ## 📋 评审会讨论要点
-    - 给产品：...
-    - 给开发：...
-    - 给测试：...
-11. ## ✅ 评审后行动项
-
-禁止：评估工时、评估复杂度、做主观评价
-只做：陈述事实、展示关系、列出问题
-"""
+    return render_tool_return_markdown("lanhu_get_ai_analyze_page_result", "stage4_explorer", account=account)
 
 
-def _get_analysis_mode_prompt(analysis_mode: str) -> dict:
+def _get_analysis_mode_prompt(analysis_mode: str, account: str | None = None) -> dict:
     """
     根据分析模式获取对应的 prompt
     
@@ -4231,22 +3763,22 @@ def _get_analysis_mode_prompt(analysis_mode: str) -> dict:
         return {
             "mode_name": "测试视角",
             "mode_desc": "提取测试场景、校验规则、异常清单",
-            "stage2_prompt": _get_stage2_prompt_tester(),
-            "stage4_prompt": _get_stage4_prompt_tester()
+            "stage2_prompt": _get_stage2_prompt_tester(account),
+            "stage4_prompt": _get_stage4_prompt_tester(account)
         }
     elif analysis_mode == "explorer":
         return {
             "mode_name": "快速探索",
             "mode_desc": "提取核心功能、依赖关系、评审要点",
-            "stage2_prompt": _get_stage2_prompt_explorer(),
-            "stage4_prompt": _get_stage4_prompt_explorer()
+            "stage2_prompt": _get_stage2_prompt_explorer(account),
+            "stage4_prompt": _get_stage4_prompt_explorer(account)
         }
     else:  # developer (default)
         return {
             "mode_name": "开发视角",
             "mode_desc": "提取所有细节、字段规则、完整流程",
-            "stage2_prompt": _get_stage2_prompt_developer(),
-            "stage4_prompt": _get_stage4_prompt_developer()
+            "stage2_prompt": _get_stage2_prompt_developer(account),
+            "stage4_prompt": _get_stage4_prompt_developer(account)
         }
 
 
@@ -4293,11 +3825,11 @@ async def lanhu_get_ai_analyze_page_result(
           When generating code, you MUST use these exact color/font/size values from
           [设计样式参考] instead of guessing. For images, use the local file paths provided.
     """
-    extractor = LanhuExtractor()
+    account, user_name, user_role = get_user_info(ctx) if ctx else ('', '匿名', '未知')
+    extractor = LanhuExtractor(account=account)
 
     try:
         # 记录协作者
-        user_name, user_role = get_user_info(ctx) if ctx else ('匿名', '未知')
         project_id = get_project_id_from_url(url)
         if project_id:
             store = MessageStore(project_id)
@@ -4403,7 +3935,7 @@ async def lanhu_get_ai_analyze_page_result(
         else:
             # FULL模式的提示（STAGE 2详细分析）
             # 获取分析模式对应的 prompt
-            mode_prompts = _get_analysis_mode_prompt(analysis_mode)
+            mode_prompts = _get_analysis_mode_prompt(analysis_mode, account=account)
             
             header_text += "=" * 60 + "\n"
             header_text += f"🤖 STAGE 2 分析模式：【{mode_prompts['mode_name']}】\n"
@@ -4466,7 +3998,7 @@ async def lanhu_get_ai_analyze_page_result(
             header_text += "⚠️ 【重要】完成扫描后必须询问用户选择分析模式：\n"
             header_text += "=" * 60 + "\n"
             # 根据用户角色生成推荐的分析模式选项
-            user_name_local, user_role_local = get_user_info(ctx) if ctx else ('匿名', '未知')
+            _, user_name_local, user_role_local = get_user_info(ctx) if ctx else ('', '匿名', '未知')
             mode_options_local = _get_analysis_mode_options_by_role(user_role_local)
             
             header_text += "全部页面已浏览完毕。\n\n"
@@ -4607,10 +4139,10 @@ async def lanhu_get_designs(
     Returns:
         Design image list and project metadata
     """
-    extractor = LanhuExtractor()
+    account, user_name, user_role = get_user_info(ctx) if ctx else ('', '匿名', '未知')
+    extractor = LanhuExtractor(account=account)
     try:
         # 记录协作者
-        user_name, user_role = get_user_info(ctx) if ctx else ('匿名', '未知')
         project_id = get_project_id_from_url(url)
         if project_id:
             store = MessageStore(project_id)
@@ -4763,10 +4295,10 @@ async def lanhu_get_ai_analyze_design_result(
         DESIGN IMAGE is for visual verification ONLY. It has the LOWEST priority.
         NEVER use the design image to override any CSS value from the HTML+CSS code.
     """
-    extractor = LanhuExtractor()
+    account, user_name, user_role = get_user_info(ctx) if ctx else ('', '匿名', '未知')
+    extractor = LanhuExtractor(account=account)
     try:
         # 记录协作者
-        user_name, user_role = get_user_info(ctx) if ctx else ('匿名', '未知')
         project_id = get_project_id_from_url(url)
         if project_id:
             store = MessageStore(project_id)
@@ -4964,176 +4496,134 @@ async def lanhu_get_ai_analyze_design_result(
             summary_text += f"✓ {sketch_fallback_count} design(s) using Sketch annotation fallback (标注模式)\n"
         summary_text += "\n"
 
-        # Show design list with both image and HTML info（每条加显式标题便于多图时对应）
-        summary_text += "📋 Design List (display order from top to bottom):\n"
-        summary_text += "下方图片顺序与列表中「设计图 1」「设计图 2」… 一一对应，请按序号关联图片与代码。\n\n"
-        summary_text += "🚨 CRITICAL: 设计稿代码使用流程（必须按顺序执行）\n"
-        summary_text += "以下 HTML+CSS 是从设计稿 Schema 生成的【设计规格书】，是所有设计参数的权威来源。\n"
-        summary_text += "⚠️ 权威优先级: HTML+CSS 代码 > Design Tokens 标注 > 设计图图片\n"
-        summary_text += "⚠️ 核心原则: 直接复用 CSS 属性值，禁止修改/简化/美化任何 CSS 值\n\n"
-        summary_text += "STEP 1 - 探测用户项目环境：\n"
-        summary_text += "  读取项目配置文件（package.json / tsconfig.json / pubspec.yaml / build.gradle / Podfile 等）\n"
-        summary_text += "  识别框架: React/Vue/Angular/Svelte/Flutter/SwiftUI/Compose/纯HTML\n"
-        summary_text += "  识别样式方案: CSS Modules / Tailwind / SCSS / Styled Components / scoped style 等\n"
-        summary_text += "  识别项目目录结构和命名规范\n"
-        summary_text += "  如无法判断框架，默认输出纯 HTML 单文件\n\n"
-        summary_text += "STEP 2 - 下载图片资源到本地（必须在生成代码前完成）：\n"
-        summary_text += "  下方每个设计图的 HTML 代码中，图片已替换为本地路径（./assets/slices/xxx.png）\n"
-        summary_text += "  每个设计图下方附有「图片资源下载映射」，列出 本地路径 ← 远程下载地址\n"
-        summary_text += "  必须按映射表下载所有图片到项目本地 assets 目录：\n"
-        summary_text += "    macOS/Linux → curl -o <path> \"<url>\"\n"
-        summary_text += "    Windows → PowerShell Invoke-WebRequest -Uri \"<url>\" -OutFile <path>\n"
-        summary_text += "  如需更多切图（图标、背景等），调用 lanhu_get_design_slices(url, design_name)\n\n"
-        summary_text += "STEP 3 - 生成框架适配代码（直接复用 CSS 值，禁止修改）：\n"
-        summary_text += "  从下方 HTML+CSS 直接复制所有 CSS 属性值（颜色/字号/间距/圆角/渐变等）\n"
-        summary_text += "  ⚠️ 必须原样使用 CSS 值，禁止做任何修改：\n"
-        summary_text += "    - rgba(255,115,10,1) 不要改成 #FF730A\n"
-        summary_text += "    - linear-gradient 不要简化成纯色\n"
-        summary_text += "    - margin/padding 数值不要四舍五入\n"
-        summary_text += "    - font-family 不要删减或重排\n"
-        summary_text += "  按目标框架生成组件代码：\n"
-        summary_text += "    React/Next.js  → JSX + CSS Modules 或跟随项目已有方案\n"
-        summary_text += "    Vue/Nuxt       → .vue SFC + <style scoped>\n"
-        summary_text += "    Angular        → .ts + .html + .css\n"
-        summary_text += "    Flutter        → Widget + EdgeInsets/BoxDecoration，px→逻辑像素\n"
-        summary_text += "    SwiftUI        → View + ViewModifier，px→pt\n"
-        summary_text += "    Android Compose → @Composable + Modifier，px→dp，font px→sp\n"
-        summary_text += "    纯 HTML         → 单个 .html 文件，内联 <style>（含 common.css 工具类）\n"
-        summary_text += "  图片路径按框架约定适配（代码中已是本地路径，只需调整路径格式）：\n"
-        summary_text += "    React/Vue → import img from '@/assets/slices/xxx.png'\n"
-        summary_text += "    Flutter   → AssetImage('assets/images/xxx.png')\n"
-        summary_text += "    纯 HTML   → <img src=\"./assets/slices/xxx.png\">（已就绪）\n\n"
-        summary_text += "STEP 4 - 对照 Design Tokens 补充校验（如下方包含 Design Tokens）：\n"
-        summary_text += "  Design Tokens 来自原始 Sketch 设计数据，作为补充参考。\n"
-        summary_text += "  优先级: HTML+CSS > Design Tokens > 设计图\n"
-        summary_text += "  仅当 HTML+CSS 中明显缺失某属性时，用 Design Token 补充：\n"
-        summary_text += "    如渐变填充、复杂阴影、多边圆角等 CSS 未能完整表达的属性\n"
-        summary_text += "  Design Token 不能覆盖 HTML+CSS 中已有的值。\n\n"
-        summary_text += "STEP 5 - 代码完成后逐属性还原度核查（必须执行，不得跳过）：\n"
-        summary_text += "  适用于所有目标平台：HTML/CSS、React、Vue、Flutter、SwiftUI、Compose、Android XML 等。\n"
-        summary_text += "  将设计稿 HTML+CSS 中每个属性映射到目标平台等价写法，逐一核查值是否还原：\n"
-        summary_text += "  ① 尺寸约束：设计稿固定 height 的地方，目标平台不得变为自适应/wrap\n"
-        summary_text += "     HTML: height 不能改成 min-height | Flutter: SizedBox 不能换成 Flexible\n"
-        summary_text += "     SwiftUI: .frame(height:) 不能省略 | Compose: height() 不能用 wrapContent\n"
-        summary_text += "  ② 裁剪：设计稿 overflow:hidden 的容器，各平台必须同步裁剪\n"
-        summary_text += "     HTML: overflow:hidden | Flutter: ClipRect/ClipRRect | SwiftUI: .clipped()\n"
-        summary_text += "     Compose: clip() | Android: android:clipChildren=\"true\"\n"
-        summary_text += "  ③ 颜色值：rgba(r,g,b,a) 转换到目标平台格式时，数值不得偏移\n"
-        summary_text += "     HTML: 保持 rgba() | Flutter: Color.fromRGBO() | SwiftUI: Color(red:green:blue:opacity:)\n"
-        summary_text += "     Compose: Color(r,g,b,a) | Android XML: #AARRGGBB，禁止四舍五入\n"
-        summary_text += "  ④ 渐变：linear-gradient 必须映射为平台渐变，不能退化为纯色\n"
-        summary_text += "     Flutter: LinearGradient | SwiftUI: LinearGradient | Compose: Brush.linearGradient\n"
-        summary_text += "  ⑤ 绝对定位：left/top 坐标值必须原样映射\n"
-        summary_text += "     Flutter: Positioned(left:,top:) | SwiftUI: .offset() | Compose: Modifier.offset()\n"
-        summary_text += "  ⑥ 字体：family、weight、size 三者都必须还原；HTML 还需保留 fallback 顺序\n"
-        summary_text += "  ⑦ 间距：每个方向的 margin/padding 数值不得改动\n"
-        summary_text += "     Flutter: EdgeInsets | SwiftUI: .padding() | Compose: Modifier.padding()\n"
-        summary_text += "     Android: android:layout_margin / android:padding\n"
-        summary_text += "  ⑧ 图片资源：任何图片不得被 SVG/CSS形状/emoji/占位图替换\n"
-        summary_text += "  ⑨ 元素完整性：设计稿中每个可见元素，目标代码中必须对应存在\n"
-        summary_text += "  ⑩ 远程 URL：最终代码中不得残留任何蓝湖 CDN 远程地址\n"
-        summary_text += "  核查结论：对每处差异明确说明是「有意的平台适配（如 px→dp 单位换算）」\n"
-        summary_text += "  还是「错误偏差（值发生了改变）」，错误偏差必须立即修正后再交付。\n\n"
-        summary_text += "❌ 严禁行为：\n"
-        summary_text += "  - 禁止修改 CSS 属性值（不要改颜色格式、不要简化渐变、不要调整数值）\n"
-        summary_text += "  - 禁止凭空编造设计参数（颜色、尺寸、间距等必须来自下方 CSS）\n"
-        summary_text += "  - 禁止用设计图的视觉感受覆盖 CSS 中的精确值\n"
-        summary_text += "  - 禁止用 SVG/CSS 形状/emoji 替换切图资源\n"
-        summary_text += "  - 禁止省略任何视觉元素\n"
-        summary_text += "  - 禁止在最终代码中使用蓝湖远程 URL\n\n"
-        summary_text += "📐 common.css 工具类含义（用于理解布局意图）：\n"
-        summary_text += "  flex-col = Column 方向布局    flex-row = Row 方向布局\n"
-        summary_text += "  justify-between/center/start/end/around/evenly = 主轴对齐\n"
-        summary_text += "  align-start/center/end = 交叉轴对齐\n\n"
-        
+        summary_text += render_tool_return_markdown(
+            "lanhu_get_ai_analyze_design_result",
+            "summary_header",
+            account=account,
+        )
+        summary_text += "\n\n"
+
         success_image_results = [r for r in image_results if r['success']]
         success_html_results = {r['design_name']: r for r in html_results if r['success']}
         failed_html_by_name = {r['design_name']: r for r in html_results if not r['success']}
-        
-        for idx, img_r in enumerate(success_image_results, 1):
-            summary_text += f"\n--- 设计图 {idx}：{img_r['design_name']} ---\n"
 
+        def _format_mapping_block(mapping: dict, *, referer_required: bool = False, include_download_example: bool = False) -> str:
+            if not mapping:
+                return ""
+            lines = [f"\n   📥 图片资源下载映射（共 {len(mapping)} 个，必须全部下载到项目本地）:"]
+            if referer_required:
+                lines[0] = f"\n   📥 资源下载映射（共 {len(mapping)} 个，请全部下载到项目本地后替换 HTML 中的 URL）:"
+                lines.append("   ⚠️ 下载时必须带 Referer: https://lanhuapp.com/ 请求头")
+            else:
+                lines.append("   代码中已使用本地路径引用，请按以下映射下载对应远程资源：")
+            for local_path, remote_url in mapping.items():
+                lines.append(f"     {local_path} ← {remote_url}")
+            if include_download_example:
+                lines.append("   下载命令示例（macOS/Linux）:")
+                lines.append("     mkdir -p ./assets/slices")
+                for local_path, remote_url in mapping.items():
+                    lines.append(f'     curl -o "{local_path}" "{remote_url}"')
+            return "\n".join(lines) + "\n"
+
+        def _format_design_tokens_block(tokens: str, title: str, preface: str = "") -> str:
+            if not tokens:
+                return ""
+            block = f"\n   --- Design Tokens {title} ---\n"
+            if preface:
+                block += f"{preface}\n"
+            block += f"{tokens}\n   --- End Design Tokens ---\n"
+            return block
+
+        def _format_layer_annotations_block(layer_annots: list) -> str:
+            if not layer_annots:
+                return ""
+            lines = [f"\n   📐 图层精确 CSS 标注（共 {len(layer_annots)} 个图层）:"]
+            for la in layer_annots:
+                la_name = la.get('name', '')
+                la_type = la.get('type', '')
+                la_css = la.get('css', {})
+                css_str = '; '.join(f'{k}: {v}' for k, v in la_css.items())
+                line = f"     [{la_type}] {la_name}: {css_str}"
+                if la.get('text'):
+                    line += f" | text=\"{la['text'][:50]}\""
+                if la.get('slice_url'):
+                    line += f" | slice={la['slice_url']}"
+                lines.append(line)
+            return "\n".join(lines) + "\n"
+
+        def _format_sketch_annotations_block(annotations: str) -> str:
+            if not annotations:
+                return ""
+            return f"   --- 设计标注详情（参考补充） ---\n{annotations}\n   --- End 设计标注 ---\n"
+
+        for idx, img_r in enumerate(success_image_results, 1):
             html_r = success_html_results.get(img_r['design_name'])
             if html_r:
-                summary_text += f"   📄 完整代码（图片已替换为本地路径）:\n"
-                summary_text += f"   ```html\n"
-                summary_text += html_r['html_code']
-                summary_text += f"\n   ```\n"
-
-                mapping = html_r.get('image_url_mapping', {})
-                if mapping:
-                    summary_text += f"\n   📥 图片资源下载映射（共 {len(mapping)} 个，必须全部下载到项目本地）:\n"
-                    summary_text += f"   代码中已使用本地路径引用，请按以下映射下载对应远程资源：\n"
-                    for local_path, remote_url in mapping.items():
-                        summary_text += f"     {local_path} ← {remote_url}\n"
-                    summary_text += f"   下载命令示例（macOS/Linux）:\n"
-                    summary_text += f"     mkdir -p ./assets/slices\n"
-                    for local_path, remote_url in mapping.items():
-                        summary_text += f'     curl -o "{local_path}" "{remote_url}"\n'
-                    summary_text += f"\n"
-
-                if html_r.get('design_tokens'):
-                    summary_text += f"\n   --- Design Tokens (高风险元素，权威参考) ---\n"
-                    summary_text += f"   以下参数来自原始设计数据，如 HTML+CSS 与此处冲突，以此处为准。\n\n"
-                    summary_text += html_r['design_tokens']
-                    summary_text += f"\n   --- End Design Tokens ---\n"
+                summary_text += render_tool_return_markdown(
+                    "lanhu_get_ai_analyze_design_result",
+                    "summary_success_design",
+                    {
+                        "DESIGN_INDEX": str(idx),
+                        "DESIGN_NAME": img_r['design_name'],
+                        "HTML_CODE": html_r['html_code'],
+                        "IMAGE_MAPPING_BLOCK": _format_mapping_block(
+                            html_r.get('image_url_mapping', {}),
+                            include_download_example=True,
+                        ),
+                        "DESIGN_TOKENS_BLOCK": _format_design_tokens_block(
+                            html_r.get('design_tokens', ''),
+                            "(高风险元素，权威参考)",
+                            "   以下参数来自原始设计数据，如 HTML+CSS 与此处冲突，以此处为准。",
+                        ),
+                    },
+                    account=account,
+                )
+                summary_text += "\n"
             else:
                 failed_r = failed_html_by_name.get(img_r['design_name'])
                 if failed_r and (failed_r.get('sketch_html') or failed_r.get('sketch_annotations')):
-                    summary_text += f"\n   ⚠️ DDS Schema 不可用（{failed_r.get('error', '未知')}），"
-                    summary_text += f"已使用「设计原图底图 + 真实文字 + CSS 标注」方案生成 HTML。\n"
-                    summary_text += f"   渲染策略：\n"
-                    summary_text += f"   - 设计原图作为 .design 容器的 background-image（一张图覆盖所有视觉效果）\n"
-                    summary_text += f"   - 文字图层：渲染真实文本（可选中/可编辑）+ font/color/size 属性\n"
-                    summary_text += f"   - 切图组件：<img> 标签 + 切图 URL\n"
-                    summary_text += f"   - 每个元素的 data-css 属性包含精确 CSS 标注值（颜色/圆角/阴影/字体等），供代码生成使用\n\n"
-
+                    fallback_html_block = ""
                     if failed_r.get('sketch_html'):
-                        summary_text += f"   📄 HTML+CSS 代码:\n"
-                        summary_text += f"   ```html\n"
-                        summary_text += failed_r['sketch_html']
-                        summary_text += f"\n   ```\n"
-
-                    fb_mapping = failed_r.get('image_url_mapping', {})
-                    if fb_mapping:
-                        summary_text += f"\n   📥 资源下载映射（共 {len(fb_mapping)} 个，请全部下载到项目本地后替换 HTML 中的 URL）:\n"
-                        summary_text += f"   ⚠️ 下载时必须带 Referer: https://lanhuapp.com/ 请求头\n"
-                        for local_path, remote_url in fb_mapping.items():
-                            summary_text += f"     {local_path} ← {remote_url}\n"
-                        summary_text += f"\n"
-
-                    summary_text += f"\n   🎯 使用指南:\n"
-                    summary_text += f"     1. 先下载上方所有资源到本地对应路径，然后替换 HTML 中的远程 URL 为本地路径\n"
-                    summary_text += f"     2. 其中 ./assets/designs/design.png 是设计底图，HTML 的 .design 容器用它做 background-image\n"
-                    summary_text += f"     3. 每个元素的 data-css 属性包含精确 CSS 标注值，请直接复用到代码中\n"
-                    summary_text += f"     4. 文字图层是真实文本（可选中/修改），切图是 <img> 标签\n"
-                    summary_text += f"     5. 调用 lanhu_get_design_slices 可获取更多细粒度切图资源\n\n"
-
-                    layer_annots = failed_r.get('layer_css_annotations') or []
-                    if layer_annots:
-                        summary_text += f"\n   📐 图层精确 CSS 标注（共 {len(layer_annots)} 个图层）:\n"
-                        for la in layer_annots:
-                            la_name = la.get('name', '')
-                            la_type = la.get('type', '')
-                            la_css = la.get('css', {})
-                            css_str = '; '.join(f'{k}: {v}' for k, v in la_css.items())
-                            summary_text += f"     [{la_type}] {la_name}: {css_str}"
-                            if la.get('text'):
-                                summary_text += f" | text=\"{la['text'][:50]}\""
-                            if la.get('slice_url'):
-                                summary_text += f" | slice={la['slice_url']}"
-                            summary_text += "\n"
-                        summary_text += "\n"
-
-                    if failed_r.get('sketch_annotations'):
-                        summary_text += f"   --- 设计标注详情（参考补充） ---\n"
-                        summary_text += failed_r['sketch_annotations']
-                        summary_text += f"\n   --- End 设计标注 ---\n"
-
-                    if failed_r.get('design_tokens'):
-                        summary_text += f"\n   --- Design Tokens (高风险元素补充) ---\n"
-                        summary_text += failed_r['design_tokens']
-                        summary_text += f"\n   --- End Design Tokens ---\n"
+                        fallback_html_block = (
+                            "   📄 HTML+CSS 代码:\n"
+                            "   ```html\n"
+                            f"{failed_r['sketch_html']}\n"
+                            "   ```\n"
+                        )
+                    summary_text += render_tool_return_markdown(
+                        "lanhu_get_ai_analyze_design_result",
+                        "summary_fallback_design",
+                        {
+                            "DESIGN_INDEX": str(idx),
+                            "DESIGN_NAME": img_r['design_name'],
+                            "ERROR_MESSAGE": failed_r.get('error', '未知'),
+                            "FALLBACK_HTML_BLOCK": fallback_html_block,
+                            "FALLBACK_IMAGE_MAPPING_BLOCK": _format_mapping_block(
+                                failed_r.get('image_url_mapping', {}),
+                                referer_required=True,
+                            ),
+                            "FALLBACK_USAGE_BLOCK": (
+                                "\n   🎯 使用指南:\n"
+                                "     1. 先下载上方所有资源到本地对应路径，然后替换 HTML 中的远程 URL 为本地路径\n"
+                                "     2. 其中 ./assets/designs/design.png 是设计底图，HTML 的 .design 容器用它做 background-image\n"
+                                "     3. 每个元素的 data-css 属性包含精确 CSS 标注值，请直接复用到代码中\n"
+                                "     4. 文字图层是真实文本（可选中/修改），切图是 <img> 标签\n"
+                                "     5. 调用 lanhu_get_design_slices 可获取更多细粒度切图资源\n"
+                            ),
+                            "LAYER_ANNOTATIONS_BLOCK": _format_layer_annotations_block(
+                                failed_r.get('layer_css_annotations') or []
+                            ),
+                            "SKETCH_ANNOTATIONS_BLOCK": _format_sketch_annotations_block(
+                                failed_r.get('sketch_annotations', '')
+                            ),
+                            "DESIGN_TOKENS_BLOCK": _format_design_tokens_block(
+                                failed_r.get('design_tokens', ''),
+                                "(高风险元素补充)",
+                            ),
+                        },
+                        account=account,
+                    )
+                    summary_text += "\n"
 
         # Show failed items
         failed_image_results = [r for r in image_results if not r['success']]
@@ -5142,15 +4632,30 @@ async def lanhu_get_ai_analyze_design_result(
             if not r['success'] and not r.get('sketch_html') and not r.get('sketch_annotations')
         ]
         
+        failed_image_block = ""
         if failed_image_results:
-            summary_text += f"\n⚠️ Failed to download {len(failed_image_results)} images:\n"
+            lines = [f"\n⚠️ Failed to download {len(failed_image_results)} images:"]
             for r in failed_image_results:
-                summary_text += f"  ✗ {r['design_name']}: {r.get('error', 'Unknown')}\n"
-        
+                lines.append(f"  ✗ {r['design_name']}: {r.get('error', 'Unknown')}")
+            failed_image_block = "\n".join(lines) + "\n"
+
+        failed_html_block = ""
         if failed_html_results:
-            summary_text += f"\n⚠️ Failed to generate {len(failed_html_results)} HTML codes (no fallback available):\n"
+            lines = [f"\n⚠️ Failed to generate {len(failed_html_results)} HTML codes (no fallback available):"]
             for r in failed_html_results:
-                summary_text += f"  ✗ {r['design_name']}: {r.get('error', 'Unknown')}\n"
+                lines.append(f"  ✗ {r['design_name']}: {r.get('error', 'Unknown')}")
+            failed_html_block = "\n".join(lines) + "\n"
+
+        if failed_image_block or failed_html_block:
+            summary_text += render_tool_return_markdown(
+                "lanhu_get_ai_analyze_design_result",
+                "summary_failures",
+                {
+                    "FAILED_IMAGE_BLOCK": failed_image_block,
+                    "FAILED_HTML_BLOCK": failed_html_block,
+                },
+                account=account,
+            )
 
         content.append(summary_text)
 
@@ -5183,10 +4688,10 @@ async def lanhu_get_design_slices(
     Returns:
         Slice list with download URLs, AI will handle smart naming and batch download
     """
-    extractor = LanhuExtractor()
+    account, user_name, user_role = get_user_info(ctx) if ctx else ('', '匿名', '未知')
+    extractor = LanhuExtractor(account=account)
     try:
         # 记录协作者
-        user_name, user_role = get_user_info(ctx) if ctx else ('匿名', '未知')
         project_id = get_project_id_from_url(url)
         if project_id:
             store = MessageStore(project_id)
@@ -5238,132 +4743,14 @@ async def lanhu_get_design_slices(
             include_metadata=include_metadata
         )
 
-        # 5. Add AI workflow guide
-        ai_workflow_guide = {
-            "instructions": "🤖 AI assistant must follow this workflow to process slice download tasks",
-            "language_requirement": "⚠️ IMPORTANT: Always respond to user in Chinese (中文回复)",
-            "workflow_steps": [
-                {
-                    "step": 1,
-                    "title": "Create TODO Task Plan",
-                    "tasks": [
-                        "Analyze project structure (read package.json, pom.xml, requirements.txt, etc.)",
-                        "Identify project type (React/Vue/Flutter/iOS/Android/Plain Frontend, etc.)",
-                        "Determine slice storage directory (e.g., src/assets/images/)",
-                        "Plan slice grouping strategy (by feature module, UI component, etc.)"
-                    ]
-                },
-                {
-                    "step": 2,
-                    "title": "Smart Directory Selection Rules",
-                    "rules": [
-                        "Priority 1: If user explicitly specified output_dir → use user-specified path",
-                        "Priority 2: If project has standard assets directory → use project convention (e.g., src/assets/images/slices/)",
-                        "Priority 3: If generic project → use design_slices/{design_name}/"
-                    ],
-                    "common_project_structures": {
-                        "React/Vue": ["src/assets/", "public/images/"],
-                        "Flutter": ["assets/images/"],
-                        "iOS": ["Assets.xcassets/"],
-                        "Android": ["res/drawable/", "res/mipmap/"],
-                        "Plain Frontend": ["images/", "assets/"]
-                    }
-                },
-                {
-                    "step": 3,
-                    "title": "Smart Naming Strategy",
-                    "description": "Generate semantic filenames based on layer_path, parent_name, size",
-                    "examples": [
-                        {
-                            "layer_path": "TopStatusBar/Battery/Border",
-                            "size": "26x14",
-                            "suggested_name": "status_bar_battery_border_26x14.png"
-                        },
-                        {
-                            "layer_path": "Button/Background",
-                            "size": "200x50",
-                            "suggested_name": "button_background_200x50.png"
-                        }
-                    ],
-                    "naming_patterns": {
-                        "icons": "icon_xxx.png",
-                        "backgrounds": "bg_xxx.png",
-                        "buttons": "btn_xxx.png"
-                    }
-                },
-                {
-                    "step": 4,
-                    "title": "Environment Detection and Download Solution Selection",
-                    "principle": "AI must first detect current system environment and available tools, then autonomously select the best download solution",
-                    "priority_rules": [
-                        "Priority 1: Use system built-in download tools (curl/PowerShell/wget, etc.)",
-                        "Priority 2: If system tools unavailable, detect programming language environment (python/node, etc.)",
-                        "Priority 3: Create temporary script as last resort"
-                    ],
-                    "detection_steps": [
-                        "Step 1: Detect operating system type (Windows/macOS/Linux)",
-                        "Step 2: Sequentially detect available download tools",
-                        "Step 3: Autonomously select optimal solution based on detection results",
-                        "Step 4: Execute download task",
-                        "Step 5: Clean up temporary files (if any)"
-                    ],
-                    "common_tools_by_platform": {
-                        "Windows": {
-                            "built_in": ["PowerShell Invoke-WebRequest", "certutil"],
-                            "optional": ["curl (Win10 1803+ built-in)", "python", "node"]
-                        },
-                        "macOS": {
-                            "built_in": ["curl"],
-                            "optional": ["python", "wget", "node"]
-                        },
-                        "Linux": {
-                            "built_in": ["curl", "wget"],
-                            "optional": ["python", "node"]
-                        }
-                    },
-                    "important_principles": [
-                        "⚠️ Do not assume any tool is available, must detect first",
-                        "⚠️ Prefer system built-in tools, avoid third-party dependencies",
-                        "⚠️ Do not use fixed code templates or example code",
-                        "⚠️ Dynamically generate commands or scripts based on actual environment",
-                        "⚠️ Control concurrency when batch downloading",
-                        "⚠️ Must clean up temporary files after completion"
-                    ]
-                }
-            ],
-            "execution_workflow": {
-                "description": "Complete workflow that AI must autonomously complete",
-                "steps": [
-                    "Step 1: Call lanhu_get_design_slices(url, design_name) to get slice info",
-                    "Step 2: Create TODO task plan (use todo_write tool)",
-                    "Step 3: Detect current operating system type",
-                    "Step 4: Detect available download tools by priority",
-                    "Step 5: Identify project type and determine output directory",
-                    "Step 6: Generate smart filenames based on slice info",
-                    "Step 7: Select optimal download solution based on detection results",
-                    "Step 8: Execute batch download task",
-                    "Step 9: Verify download results",
-                    "Step 10: Clean up temporary files and complete TODO"
-                ]
-            },
-            "important_notes": [
-                "🎯 AI must proactively complete the entire workflow, don't just return info and wait for user action",
-                "📋 AI must use todo_write tool to create task plan, ensure orderly progress",
-                "🔍 AI must detect environment and tool availability first, then select download solution",
-                "⭐ AI must prefer system built-in tools, avoid third-party dependencies",
-                "🚫 AI must not use fixed code examples, must dynamically generate commands based on actual environment",
-                "✨ AI must smartly select output directory based on project structure, don't blindly use default path",
-                "🏷️ AI must generate semantic filenames based on slice's layer_path and parent_name",
-                "💻 AI must select corresponding download tools for different OS (Windows/macOS/Linux)",
-                "🧹 AI must clean up temporary files after completion (if any)",
-                "🗣️ AI must always respond to user in Chinese (中文回复)"
-            ]
-        }
-
         return {
             'status': 'success',
             **slices_data,
-            'ai_workflow_guide': ai_workflow_guide
+            'ai_workflow_guide_markdown': render_tool_return_markdown(
+                "lanhu_get_design_slices",
+                "workflow_guide",
+                account=account,
+            ),
         }
 
     except Exception as e:
@@ -5419,7 +4806,7 @@ async def lanhu_say(
         Post result, including message ID and details
     """
     # 获取用户信息
-    user_name, user_role = get_user_info(ctx) if ctx else ('匿名', '未知')
+    account, user_name, user_role = get_user_info(ctx) if ctx else ('', '匿名', '未知')
     
     # 获取project_id
     project_id = get_project_id_from_url(url)
@@ -5427,7 +4814,7 @@ async def lanhu_say(
         return {"status": "error", "message": "无法从URL解析project_id"}
     
     # 获取元数据（自动，带缓存）
-    metadata = await _fetch_metadata_from_url(url)
+    metadata = await _fetch_metadata_from_url(url, account=account)
     
     # 验证message_type
     valid_types = ['normal', 'task', 'question', 'urgent', 'knowledge']
@@ -5558,7 +4945,7 @@ async def lanhu_say_list(
         Message list, including mentions_me count
     """
     # 获取用户信息
-    user_name, user_role = get_user_info(ctx) if ctx else ('匿名', '未知')
+    _, user_name, user_role = get_user_info(ctx) if ctx else ('', '匿名', '未知')
     
     # 验证filter_type
     if filter_type:
@@ -5808,7 +5195,7 @@ async def lanhu_say_detail(
         Message detail list with full content
     """
     # 获取用户信息
-    user_name, user_role = get_user_info(ctx) if ctx else ('匿名', '未知')
+    _, user_name, user_role = get_user_info(ctx) if ctx else ('', '匿名', '未知')
     
     # 确定project_id
     if url and url.lower() != 'all':
@@ -5875,7 +5262,7 @@ async def lanhu_say_edit(
         Updated message details
     """
     # 获取用户信息
-    user_name, user_role = get_user_info(ctx) if ctx else ('匿名', '未知')
+    account, user_name, user_role = get_user_info(ctx) if ctx else ('', '匿名', '未知')
     
     # 获取project_id
     project_id = get_project_id_from_url(url)
@@ -5921,7 +5308,7 @@ async def lanhu_say_edit(
     # 发送飞书编辑通知
     try:
         # 获取元数据
-        metadata = await _fetch_metadata_from_url(url)
+        metadata = await _fetch_metadata_from_url(url, account=account)
         
         await send_feishu_notification(
             summary=f"🔄 [已编辑] {updated_msg.get('summary', '')}",
@@ -5961,7 +5348,7 @@ async def lanhu_say_delete(
         Delete result
     """
     # 获取用户信息
-    user_name, user_role = get_user_info(ctx) if ctx else ('匿名', '未知')
+    _, user_name, user_role = get_user_info(ctx) if ctx else ('', '匿名', '未知')
     
     # 获取project_id
     project_id = get_project_id_from_url(url)
@@ -6008,7 +5395,7 @@ async def lanhu_get_members(
         Collaborator list with first and last access time
     """
     # 获取用户信息
-    user_name, user_role = get_user_info(ctx) if ctx else ('匿名', '未知')
+    _, user_name, user_role = get_user_info(ctx) if ctx else ('', '匿名', '未知')
     
     # 获取project_id
     project_id = get_project_id_from_url(url)
@@ -6028,11 +5415,27 @@ async def lanhu_get_members(
     }
 
 
+register_extension_routes(
+    mcp=mcp,
+    project_root=Path(__file__).resolve().parent,
+    account_cookie_file=ACCOUNT_COOKIE_FILE,
+    base_url=BASE_URL,
+    http_timeout=HTTP_TIMEOUT,
+    default_cookie=DEFAULT_COOKIE,
+    default_dds_cookie=DDS_COOKIE,
+    tool_resolver=lambda name: globals().get(name),
+)
+
+
 if __name__ == "__main__":
     # 运行MCP服务器
     # 使用HTTP传输方式，支持环境变量配置
     SERVER_HOST = os.getenv("SERVER_HOST", "0.0.0.0")
     SERVER_PORT = int(os.getenv("SERVER_PORT", "8100"))
-    mcp.run(transport="http", path="/mcp", host=SERVER_HOST, port=SERVER_PORT)
-
-
+    mcp.run(
+        transport="http",
+        path="/mcp",
+        host=SERVER_HOST,
+        port=SERVER_PORT,
+        middleware=build_http_middleware_from_env(),
+    )

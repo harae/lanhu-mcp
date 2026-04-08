@@ -1,0 +1,3 @@
+include static/account-config.html
+include static/tool-return-editor.html
+recursive-include db *.md
