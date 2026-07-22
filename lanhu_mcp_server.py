@@ -896,6 +896,14 @@ def convert_sketch_to_html(sketch_data: dict, design_scale: float = 2.0,
         m = re.search(r'(\d+)', style_name)
         return int(m.group(1)) if m else None
 
+    def asset_ext(remote_url: str, default: str = '.png') -> str:
+        path = urlparse(remote_url).path
+        if '.' in path.split('/')[-1]:
+            ext = '.' + path.split('/')[-1].rsplit('.', 1)[-1]
+            if ext in ('.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp'):
+                return ext
+        return default
+
     layers = []
     board_w = 375
     board_h = 667
@@ -990,8 +998,11 @@ def convert_sketch_to_html(sketch_data: dict, design_scale: float = 2.0,
         images = L.get('images') or {}
         if images.get('png_xxxhd') or images.get('svg'):
             is_slice = True
-            slice_url = images.get('png_xxxhd') or images.get('svg')
-            local_name = f"{name.replace('/', '_').replace(' ', '_')}.png"
+            png_url = images.get('png_xxxhd')
+            svg_url = images.get('svg')
+            slice_url = png_url or svg_url
+            default_ext = '.svg' if svg_url and not png_url else '.png'
+            local_name = f"{name.replace('/', '_').replace(' ', '_')}{asset_ext(slice_url, default_ext)}"
             local_path = f"./assets/slices/{local_name}"
             image_url_mapping[local_path] = slice_url
             annot['slice_url'] = slice_url
@@ -1091,6 +1102,258 @@ def convert_sketch_to_html(sketch_data: dict, design_scale: float = 2.0,
     )
 
     return html, image_url_mapping, layer_annotations
+
+
+def extract_sketch_layer_style_annotations(
+        sketch_data: dict,
+        design_width: float = None,
+        design_height: float = None,
+        fallback_scale: float = 1.0,
+        max_layers: int = 400
+) -> List[dict]:
+    """
+    从原始 Sketch/Figma JSON 中提取图层样式，作为 DDS Schema 不可用时的兜底标注来源。
+    同时保留 raw_frame 与 logical_frame：raw_frame 对应蓝湖原始图层坐标，logical_frame
+    按接口返回的设计图尺寸换算，避免只拿单一坐标体系导致还原比例漂移。
+    """
+    artboard = sketch_data.get('artboard') or sketch_data.get('board') or {}
+    if not isinstance(artboard, dict):
+        return []
+
+    raw_frame = artboard.get('frame') or artboard.get('realFrame') or {}
+    raw_width = raw_frame.get('width') or artboard.get('width')
+    raw_height = raw_frame.get('height') or artboard.get('height')
+
+    scale_candidates = []
+    if raw_width and design_width:
+        scale_candidates.append(float(raw_width) / float(design_width))
+    if raw_height and design_height:
+        scale_candidates.append(float(raw_height) / float(design_height))
+
+    # 优先用原始画布与接口尺寸推导比例；无法推导时才回退到设备倍率。
+    if scale_candidates:
+        scale = sum(scale_candidates) / len(scale_candidates)
+    else:
+        scale = fallback_scale or 1.0
+    if not scale or scale <= 0:
+        scale = 1.0
+
+    def _num(value):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _fmt(value):
+        value = round(float(value), 3)
+        if value.is_integer():
+            return str(int(value))
+        return str(value).rstrip('0').rstrip('.')
+
+    def _px(value, use_scale=False):
+        raw = _num(value)
+        if use_scale:
+            raw = raw / scale
+        return f"{_fmt(raw)}px"
+
+    def _frame_css(frame: dict, use_scale=False):
+        if not isinstance(frame, dict):
+            return {}
+        return {
+            'position': 'absolute',
+            'left': _px(frame.get('left', 0), use_scale),
+            'top': _px(frame.get('top', 0), use_scale),
+            'width': _px(frame.get('width', 0), use_scale),
+            'height': _px(frame.get('height', 0), use_scale),
+        }
+
+    def _frame_values(frame: dict, use_scale=False):
+        if not isinstance(frame, dict):
+            return {}
+        divisor = scale if use_scale else 1.0
+        return {
+            'left': round(_num(frame.get('left', 0)) / divisor, 3),
+            'top': round(_num(frame.get('top', 0)) / divisor, 3),
+            'width': round(_num(frame.get('width', 0)) / divisor, 3),
+            'height': round(_num(frame.get('height', 0)) / divisor, 3),
+        }
+
+    def _color_value(color: dict):
+        if not isinstance(color, dict):
+            return None
+        if color.get('value'):
+            return color['value']
+        r = color.get('r', color.get('red', 0))
+        g = color.get('g', color.get('green', 0))
+        b = color.get('b', color.get('blue', 0))
+        a = color.get('a', color.get('alpha', 1))
+        if max(_num(r), _num(g), _num(b)) <= 1:
+            r, g, b = _num(r) * 255, _num(g) * 255, _num(b) * 255
+        return f"rgba({round(_num(r))},{round(_num(g))},{round(_num(b))},{_fmt(_num(a))})"
+
+    def _radius_css(layer: dict, use_scale=False):
+        radii = []
+        for path in layer.get('paths') or []:
+            radius = path.get('radius')
+            if isinstance(radius, dict):
+                radii = [
+                    radius.get('topLeft', 0),
+                    radius.get('topRight', 0),
+                    radius.get('bottomRight', radius.get('bottomLeft', 0)),
+                    radius.get('bottomLeft', 0),
+                ]
+                break
+        if not radii:
+            radius = layer.get('radius')
+            if isinstance(radius, dict):
+                radii = [
+                    radius.get('topLeft', 0),
+                    radius.get('topRight', 0),
+                    radius.get('bottomRight', 0),
+                    radius.get('bottomLeft', 0),
+                ]
+        if not radii or not any(_num(v) for v in radii):
+            return None
+        values = [_px(v, use_scale) for v in radii]
+        if len(set(values)) == 1:
+            return values[0]
+        return ' '.join(values)
+
+    def _shadow_css(shadows: list, use_scale=False):
+        css_values = []
+        for shadow in shadows or []:
+            if not shadow.get('isEnabled', True):
+                continue
+            color = _color_value(shadow.get('color'))
+            if not color:
+                continue
+            inset = 'inset ' if shadow.get('inset') else ''
+            css_values.append(
+                f"{inset}{_px(shadow.get('x', 0), use_scale)} "
+                f"{_px(shadow.get('y', 0), use_scale)} "
+                f"{_px(shadow.get('blur', 0), use_scale)} "
+                f"{_px(shadow.get('spread', 0), use_scale)} {color}"
+            )
+        return ', '.join(css_values) if css_values else None
+
+    def _fill_css(fills: list):
+        for fill in fills or []:
+            if not fill.get('isEnabled', True):
+                continue
+            if fill.get('type') == 'color':
+                color = _color_value(fill.get('color'))
+                if color:
+                    return 'background-color', color
+            image_url = ((fill.get('ddsImage') or {}).get('imageUrl')
+                         or (fill.get('image') or {}).get('url'))
+            if image_url:
+                return 'background-image', f"url({image_url})"
+        return None, None
+
+    def _font_weight(font: dict):
+        if not isinstance(font, dict):
+            return None
+        if font.get('fontWeight') is not None:
+            return str(font['fontWeight'])
+        font_type = str(font.get('type') or '').lower()
+        if 'semibold' in font_type:
+            return '600'
+        if 'medium' in font_type:
+            return '500'
+        if 'bold' in font_type:
+            return '700'
+        if 'regular' in font_type:
+            return '400'
+        return None
+
+    def _apply_style(layer: dict, css: dict, use_scale=False):
+        style = layer.get('style') or {}
+        if style.get('opacity') is not None and style.get('opacity') != 1:
+            css['opacity'] = _fmt(style.get('opacity'))
+
+        fill_prop, fill_value = _fill_css(style.get('fills') or [])
+        if fill_prop and fill_value:
+            css[fill_prop] = fill_value
+
+        radius = _radius_css(layer, use_scale)
+        if radius:
+            css['border-radius'] = radius
+            css['overflow'] = 'hidden'
+
+        shadow = _shadow_css(style.get('shadows') or [], use_scale)
+        if shadow:
+            css['box-shadow'] = shadow
+
+        text = layer.get('text') or {}
+        text_style = text.get('style') or {}
+        font = text_style.get('font') or {}
+        if font:
+            if font.get('name'):
+                css['font-family'] = f"\"{font.get('name')}\""
+            if font.get('size') is not None:
+                css['font-size'] = _px(font.get('size'), use_scale)
+            weight = _font_weight(font)
+            if weight:
+                css['font-weight'] = weight
+            if font.get('align'):
+                css['text-align'] = font.get('align')
+            if (font.get('lineHeight') or {}).get('unit') == 'AUTO':
+                css['line-height'] = 'normal'
+            elif (font.get('lineHeight') or {}).get('value') is not None:
+                css['line-height'] = _px(font['lineHeight']['value'], use_scale)
+            letter_spacing = font.get('letterSpacing') or {}
+            if letter_spacing.get('value') is not None:
+                css['letter-spacing'] = _px(letter_spacing.get('value'), use_scale)
+        color = _color_value(text_style.get('color'))
+        if color:
+            css['color'] = color
+
+    annotations = []
+
+    def _walk(layer: dict, path: str):
+        if len(annotations) >= max_layers:
+            return
+        if not isinstance(layer, dict) or layer.get('visible') is False:
+            return
+
+        frame = layer.get('frame') or layer.get('realFrame') or layer.get('combinedFrame')
+        layer_type = layer.get('type') or layer.get('_class') or layer.get('class')
+        if isinstance(frame, dict) and frame.get('width') and frame.get('height'):
+            raw_css = _frame_css(frame, use_scale=False)
+            logical_css = _frame_css(frame, use_scale=True)
+            _apply_style(layer, raw_css, use_scale=False)
+            _apply_style(layer, logical_css, use_scale=True)
+
+            text = layer.get('text') or {}
+            text_value = text.get('value') or (text.get('style') or {}).get('content')
+            annot = {
+                'name': layer.get('name', ''),
+                'type': layer_type,
+                'path': path,
+                'raw_frame': _frame_values(frame, use_scale=False),
+                'logical_frame': _frame_values(frame, use_scale=True),
+                'scale': round(scale, 6),
+                'scale_note': 'logical_frame = raw_frame / scale，scale 由原始画布尺寸与接口设计图尺寸推导',
+                'css': raw_css,
+                'logical_css': logical_css,
+            }
+            if text_value:
+                annot['text'] = text_value
+            for fill in (layer.get('style') or {}).get('fills') or []:
+                image_url = ((fill.get('ddsImage') or {}).get('imageUrl')
+                             or (fill.get('image') or {}).get('url'))
+                if image_url:
+                    annot['slice_url'] = image_url
+                    break
+            annotations.append(annot)
+
+        for idx, child in enumerate(layer.get('layers') or []):
+            _walk(child, f"{path}/layers[{idx}]")
+
+    for idx, layer in enumerate(artboard.get('layers') or []):
+        _walk(layer, f"/artboard/layers[{idx}]")
+
+    return annotations
 
 
 # JS 脚本：注入蓝湖页面，遍历所有图层，点击提取标注面板数据
@@ -1492,43 +1755,83 @@ def minify_html(html: str) -> str:
 def _localize_image_urls(html_code: str, design_name: str) -> tuple[str, dict]:
     """
     将生成的 HTML 中的远程图片 URL 替换为本地路径占位符，并返回下载映射表。
-    处理 <img src="..."> 和 CSS url(...) 中的远程地址。
+    文件名优先使用 CSS 类名（img class 属性 / CSS 规则选择器），退而使用计数器。
+    同一 URL 复用同一本地路径（相同图片不重复下载）。
     """
-    url_mapping = {}
+    url_to_localpath: dict[str, str] = {}
+    url_mapping: dict[str, str] = {}
+    used_names: set[str] = set()
     counter = [0]
 
-    def _make_local_name(remote_url: str) -> str:
-        parsed = urlparse(remote_url)
-        path = parsed.path
-        ext = '.png'
+    def _get_ext(remote_url: str) -> str:
+        path = urlparse(remote_url).path
         if '.' in path.split('/')[-1]:
             ext = '.' + path.split('/')[-1].rsplit('.', 1)[-1]
-            if ext not in ('.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp'):
-                ext = '.png'
-        counter[0] += 1
-        return f"img_{counter[0]}{ext}"
+            if ext in ('.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp'):
+                return ext
+        return '.png'
 
-    def _replace_img_src(match):
-        url = match.group(1)
-        if not url or not url.startswith('http'):
-            return match.group(0)
-        local_name = _make_local_name(url)
+    def _sanitize(name: str) -> str:
+        """去除循环后缀（-0/-1/...），保留主类名。"""
+        return re.sub(r'-\d+$', '', name)
+
+    def _unique_name(base: str, ext: str) -> str:
+        candidate = f"{base}{ext}"
+        if candidate not in used_names:
+            used_names.add(candidate)
+            return candidate
+        i = 2
+        while True:
+            candidate = f"{base}_{i}{ext}"
+            if candidate not in used_names:
+                used_names.add(candidate)
+                return candidate
+            i += 1
+
+    def _get_localpath(remote_url: str, hint_class: str = None) -> str:
+        if remote_url in url_to_localpath:
+            return url_to_localpath[remote_url]
+        ext = _get_ext(remote_url)
+        if hint_class:
+            base = _sanitize(hint_class)
+        else:
+            counter[0] += 1
+            base = f"img_{counter[0]}"
+        local_name = _unique_name(base, ext)
         local_path = f"./assets/slices/{local_name}"
-        url_mapping[local_path] = url
-        return f'src="{local_path}"'
+        url_mapping[local_path] = remote_url
+        url_to_localpath[remote_url] = local_path
+        return local_path
+
+    # 从 CSS 规则中收集 url -> class_name 映射。
+    url_to_css_class: dict[str, str] = {}
+    css_block = re.search(r'<style>(.*?)</style>', html_code, re.DOTALL)
+    if css_block:
+        for rule_m in re.finditer(r'\.([\w-]+)\s*\{([^}]*)\}', css_block.group(1), re.DOTALL):
+            cls = rule_m.group(1)
+            for url_m in re.finditer(r'url\([\'"]?(https?://[^\'") ]+)[\'"]?', rule_m.group(2)):
+                url_to_css_class.setdefault(url_m.group(1), cls)
+
+    def _replace_img_tag(tag_match):
+        tag = tag_match.group(0)
+        src_m = re.search(r'src=["\']?(https?://[^"\'>\s]+)["\']?', tag)
+        if not src_m:
+            return tag
+        url = src_m.group(1)
+        cls_m = re.search(r'class=["\']([^"\']+)["\']', tag) or re.search(r'class=([^"\'>\s]+)', tag)
+        hint = cls_m.group(1).split()[0] if cls_m else url_to_css_class.get(url)
+        local_path = _get_localpath(url, hint)
+        return tag[:src_m.start(1)] + local_path + tag[src_m.end(1):]
 
     def _replace_css_url(match):
         url = match.group(1).strip('\'"')
         if not url or not url.startswith('http'):
             return match.group(0)
-        local_name = _make_local_name(url)
-        local_path = f"./assets/slices/{local_name}"
-        url_mapping[local_path] = url
+        hint = url_to_css_class.get(url)
+        local_path = _get_localpath(url, hint)
         return f"url('{local_path}')"
 
-    result = re.sub(r'src="(https?://[^"]*)"', _replace_img_src, html_code)
-    result = re.sub(r"src='(https?://[^']*)'", _replace_img_src, result)
-    result = re.sub(r'src=(https?://[^\s>\'\"]+)', _replace_img_src, result)
+    result = re.sub(r'<img\b[^>]*>', _replace_img_tag, html_code)
     result = re.sub(r'url\(([\'"]*https?://[^\)]*)\)', _replace_css_url, result)
 
     return result, url_mapping
@@ -4464,6 +4767,16 @@ async def lanhu_get_ai_analyze_design_result(
                     fallback_html, fallback_img_mapping, fallback_layer_annots = convert_sketch_to_html(
                         sketch_json, _design_scale, _design_img_url
                     )
+                    # DDS Schema 缺失时，旧兜底只覆盖部分历史 Sketch 结构；Figma/新 Sketch JSON
+                    # 的图层样式仍保存在 artboard.layers 中，这里额外提取精确图层 CSS。
+                    precise_layer_annots = extract_sketch_layer_style_annotations(
+                        sketch_json,
+                        design_width=design.get('width'),
+                        design_height=design.get('height'),
+                        fallback_scale=_design_scale
+                    )
+                    if precise_layer_annots:
+                        fallback_layer_annots = precise_layer_annots
                     fallback_img_mapping['./assets/designs/design.png'] = _design_img_url
                     fallback_html = minify_html(fallback_html)
                     fallback_annotations = _extract_full_annotations_from_sketch(sketch_json, _design_scale)
@@ -4544,6 +4857,11 @@ async def lanhu_get_ai_analyze_design_result(
                 la_css = la.get('css', {})
                 css_str = '; '.join(f'{k}: {v}' for k, v in la_css.items())
                 line = f"     [{la_type}] {la_name}: {css_str}"
+                if la.get('logical_css'):
+                    logical_css_str = '; '.join(f'{k}: {v}' for k, v in la['logical_css'].items())
+                    line += f" | logical_css=\"{logical_css_str}\""
+                if la.get('scale'):
+                    line += f" | scale={la['scale']}"
                 if la.get('text'):
                     line += f" | text=\"{la['text'][:50]}\""
                 if la.get('slice_url'):
